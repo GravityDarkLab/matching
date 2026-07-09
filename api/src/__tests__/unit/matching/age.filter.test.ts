@@ -65,6 +65,19 @@ describe("isAgeCompatible", () => {
     expect(isAgeCompatible(noYoungerPlease, younger)).toBe(false);
   });
 
+  // The three age questions are independent and optional in the questionnaire —
+  // a blank max_age_gap ("no preference on the gap") must not silently void an
+  // explicit directional veto.
+  it("fails when open_to_older is false and partner is older, even with max_age_gap = null", () => {
+    const noOlderNoGap = makeApplicant("1999-01-01", null, false, true);
+    expect(isAgeCompatible(noOlderNoGap, older)).toBe(false);
+  });
+
+  it("fails when open_to_younger is false and partner is younger, even with max_age_gap = null", () => {
+    const noYoungerNoGap = makeApplicant("1994-01-01", null, true, false);
+    expect(isAgeCompatible(noYoungerNoGap, younger)).toBe(false);
+  });
+
   it("passes when birth_date is missing on either side (skip filter)", () => {
     const noBirthDate = makeApplicant(undefined, 5, true, true);
     expect(isAgeCompatible(noBirthDate, younger)).toBe(true);

@@ -3,8 +3,9 @@
  *
  * Filter: isAgeCompatible() — hard binary check, called before scoring.
  *   - Directional checks: open_to_older / open_to_younger flags
+ *     (independent of max_age_gap — enforced even when the gap is blank)
  *   - Hard outer limit: gap > 2 × max_age_gap → reject
- *   - max_age_gap = null → skip filter entirely (no preference)
+ *   - max_age_gap = null → no gap preference, only directional checks apply
  *   - Missing birth_date → skip filter for that pair
  *
  * Modifier: ageModifier() — multiplied onto the final compatibility score.
@@ -52,14 +53,16 @@ function _passesConstraints(
   partnerAge: number,
   gap: number
 ): boolean {
-  const maxGap = num(answers, "max_age_gap");
-
-  // null = no preference → always passes
-  if (maxGap === null) return true;
-
-  // Directional hard blocks
+  // Directional hard blocks apply regardless of max_age_gap — the three age
+  // questions are independent in the questionnaire, so a blank gap preference
+  // must not void an explicit "not open to older/younger" veto.
   if (partnerAge > ownAge && bool(answers, "open_to_older") === false) return false;
   if (partnerAge < ownAge && bool(answers, "open_to_younger") === false) return false;
+
+  const maxGap = num(answers, "max_age_gap");
+
+  // null = no gap preference → no outer limit to enforce
+  if (maxGap === null) return true;
 
   // Hard outer limit: gap > 2× max_gap → reject
   if (gap > 2 * maxGap) return false;
