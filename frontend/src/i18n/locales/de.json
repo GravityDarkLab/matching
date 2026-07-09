@@ -440,12 +440,16 @@
         "keepLooking": "Jetzt weitersuchen",
         "takeABreak": "Eine Zeit lang Pause machen",
         "successTitle": "Das sind wunderbare Neuigkeiten!",
-        "successBody": "Wir freuen uns so, dass es mit {{alias}} geklappt hat. Wir ziehen uns jetzt zurück, damit ihr das genießen könnt — aber wir sind immer da, falls du uns wieder brauchst."
+        "successBody": "Wir freuen uns so, dass es mit {{alias}} geklappt hat. Wir ziehen uns jetzt zurück, damit ihr das genießen könnt — aber wir sind immer da, falls du uns wieder brauchst.",
+        "confirmSuccessTitle": "Wie schön — bestätigen?",
+        "confirmSuccessBody": "Mit der Bestätigung wird dieses Match als Erfolg markiert und beide Profile werden aus dem Matching genommen. Das lässt sich nicht rückgängig machen.",
+        "confirmSuccessYes": "Ja, es hat geklappt",
+        "confirmSuccessNo": "Noch nicht"
       },
       "iceBreakers": "Eisbrecher",
       "dateIdeas": "Date-Ideen",
       "aboutPartner": "Über {{alias}}",
-      "whyThisMatch": "Warum dieses Match",
+      "whyThisMatch": "Warum dieses Match?",
       "scoreBreakdown": "Punkteaufschlüsselung",
       "genericError": "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
       "status": {
@@ -476,7 +480,6 @@
       "characterTraits": "Charakterliche Vorlieben",
       "dealBreakers": "No-Gos",
       "dreamDate": "Traumerstes Date",
-      "whyThisMatch": "Warum dieses Match?",
       "generatingSummary": "Zusammenfassung wird erstellt…",
       "summaryError": "Zusammenfassung konnte nicht erstellt werden.",
       "summaryRetry": "Erneut versuchen",

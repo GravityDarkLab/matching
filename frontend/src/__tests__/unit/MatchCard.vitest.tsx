@@ -193,6 +193,7 @@ describe('MatchCard', () => {
     render(<MatchCard match={match} onOutcome={onOutcome} />)
 
     await userEvent.click(screen.getByRole('button', { name: /portal\.matches\.workedOut/i }))
+    await userEvent.click(screen.getByRole('button', { name: /portal\.matches\.outcome\.confirmSuccessYes/i }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Outcome was already reported')
     expect(screen.getByRole('button', { name: /portal\.matches\.workedOut/i })).toBeEnabled()
@@ -502,14 +503,33 @@ describe('MatchCard dating-phase gating', () => {
     })
   })
 
-  it('clicking "it worked" submits immediately with no feedback step', async () => {
+  // "It worked" retires both profiles permanently — it must never fire on a
+  // single click, and dismissing the dialog must never submit.
+  it('clicking "it worked" asks for confirmation, then submits with no feedback step', async () => {
     const onOutcome = vi.fn().mockResolvedValue(undefined)
     render(<MatchCard match={datingMatch(7)} onOutcome={onOutcome} />)
 
     await userEvent.click(screen.getByRole('button', { name: /portal\.matches\.workedOut/i }))
 
+    expect(onOutcome).not.toHaveBeenCalled()
+    expect(screen.getByText(/portal\.matches\.outcome\.confirmSuccessTitle/)).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /portal\.matches\.outcome\.confirmSuccessYes/i }))
+
     expect(onOutcome).toHaveBeenCalledWith('m1', 'success', undefined)
     expect(screen.getByText(/portal\.matches\.outcome\.successTitle/)).toBeInTheDocument()
+  })
+
+  it('dismissing the "it worked" confirmation submits nothing and restores the card', async () => {
+    const onOutcome = vi.fn().mockResolvedValue(undefined)
+    render(<MatchCard match={datingMatch(7)} onOutcome={onOutcome} />)
+
+    await userEvent.click(screen.getByRole('button', { name: /portal\.matches\.workedOut/i }))
+    await userEvent.click(screen.getByRole('button', { name: /portal\.matches\.outcome\.confirmSuccessNo/i }))
+
+    expect(onOutcome).not.toHaveBeenCalled()
+    expect(screen.queryByText(/portal\.matches\.outcome\.confirmSuccessTitle/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /portal\.matches\.workedOut/i })).toBeEnabled()
   })
 
   it('shows the full name above the Instagram handle when revealed', () => {

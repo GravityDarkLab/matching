@@ -440,12 +440,16 @@
         "keepLooking": "Continuer à chercher maintenant",
         "takeABreak": "Faire une pause pour un moment",
         "successTitle": "C'est une merveilleuse nouvelle !",
-        "successBody": "On est tellement content(e) que ça ait fonctionné avec {{alias}}. On se met en retrait pour vous laisser profiter de ce moment — mais on est toujours là si vous avez besoin de nous à nouveau."
+        "successBody": "On est tellement content(e) que ça ait fonctionné avec {{alias}}. On se met en retrait pour vous laisser profiter de ce moment — mais on est toujours là si vous avez besoin de nous à nouveau.",
+        "confirmSuccessTitle": "Quelle belle nouvelle — confirmer ?",
+        "confirmSuccessBody": "En confirmant, ce match sera marqué comme réussi et vos deux profils seront retirés du matching. Cette action est définitive.",
+        "confirmSuccessYes": "Oui, ça a marché",
+        "confirmSuccessNo": "Pas encore"
       },
       "iceBreakers": "Brise-glace",
       "dateIdeas": "Idées de rendez-vous",
       "aboutPartner": "À propos de {{alias}}",
-      "whyThisMatch": "Pourquoi ce match",
+      "whyThisMatch": "Pourquoi ce match ?",
       "scoreBreakdown": "Détail du score",
       "genericError": "Une erreur est survenue. Réessaie.",
       "status": {
@@ -476,7 +480,6 @@
       "characterTraits": "Préférences de caractère",
       "dealBreakers": "Rédhibitoires",
       "dreamDate": "Premier rendez-vous de rêve",
-      "whyThisMatch": "Pourquoi ce match ?",
       "generatingSummary": "Génération du résumé…",
       "summaryError": "Impossible de générer le résumé.",
       "summaryRetry": "Réessayer",

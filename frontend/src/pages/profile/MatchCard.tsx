@@ -219,6 +219,8 @@ export function MatchCard({ match, onContactRequest, onRespond, onWithdraw, onOu
   const [expanded, setExpanded] = useState(false)
   const [outcomePhase, setOutcomePhase] = useState<'idle' | 'feedback' | 'choice' | 'done'>('idle')
   const [pendingOutcome, setPendingOutcome] = useState<'success' | 'failed' | null>(null)
+  // "It worked" is irreversible (retires both profiles) — never submit it on a single click
+  const [confirmingSuccess, setConfirmingSuccess] = useState(false)
   const [selectedTags, setSelectedTags] = useState<OutcomeFeedbackTag[]>([])
   const [feedbackNote, setFeedbackNote] = useState('')
   const [submittingOutcome, setSubmittingOutcome] = useState(false)
@@ -517,7 +519,7 @@ export function MatchCard({ match, onContactRequest, onRespond, onWithdraw, onOu
             <p className="text-sm text-muted mb-3">{t('portal.matches.howDidItGo')}</p>
             <div className="flex gap-3">
               <button
-                onClick={() => { setPendingOutcome('success'); void submitOutcome('success') }}
+                onClick={() => { setPendingOutcome('success'); setConfirmingSuccess(true) }}
                 disabled={submittingOutcome}
                 className="flex-1 inline-flex items-center justify-center gap-2 bg-success text-bg rounded-full px-4 py-2.5 text-sm font-medium transition-all duration-200 hover:opacity-90 disabled:opacity-50"
               >
@@ -547,6 +549,18 @@ export function MatchCard({ match, onContactRequest, onRespond, onWithdraw, onOu
             )}
           </div>
         )}
+        <ConfirmDialog
+          open={confirmingSuccess}
+          title={t('portal.matches.outcome.confirmSuccessTitle')}
+          description={t('portal.matches.outcome.confirmSuccessBody')}
+          confirmLabel={t('portal.matches.outcome.confirmSuccessYes')}
+          cancelLabel={t('portal.matches.outcome.confirmSuccessNo')}
+          loading={submittingOutcome}
+          onConfirm={() => { setConfirmingSuccess(false); void submitOutcome('success') }}
+          // Dismiss (button, Escape, backdrop) must never submit an
+          // irreversible outcome — it just puts the card back as it was.
+          onClose={() => { setConfirmingSuccess(false); setPendingOutcome(null) }}
+        />
       </div>
     )
   }

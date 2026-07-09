@@ -440,12 +440,16 @@
         "keepLooking": "Keep looking now",
         "takeABreak": "Take a break for a while",
         "successTitle": "That's wonderful news!",
-        "successBody": "We're so happy it worked out with {{alias}}. We'll step back now and let you two enjoy this — but we're always here if you ever need us again."
+        "successBody": "We're so happy it worked out with {{alias}}. We'll step back now and let you two enjoy this — but we're always here if you ever need us again.",
+        "confirmSuccessTitle": "That's wonderful — confirm?",
+        "confirmSuccessBody": "Confirming will mark this match as a success and retire both of your profiles from matching. This can't be undone.",
+        "confirmSuccessYes": "Yes, it worked out",
+        "confirmSuccessNo": "Not yet"
       },
       "iceBreakers": "Ice-breakers",
       "dateIdeas": "Date ideas",
       "aboutPartner": "About {{alias}}",
-      "whyThisMatch": "Why this match",
+      "whyThisMatch": "Why this match?",
       "scoreBreakdown": "Score breakdown",
       "genericError": "Something went wrong. Please try again.",
       "status": {
@@ -476,7 +480,6 @@
       "characterTraits": "Character preferences",
       "dealBreakers": "Deal breakers",
       "dreamDate": "Dream first date",
-      "whyThisMatch": "Why this match?",
       "generatingSummary": "Generating summary…",
       "summaryError": "Couldn't generate summary.",
       "summaryRetry": "Try again",
