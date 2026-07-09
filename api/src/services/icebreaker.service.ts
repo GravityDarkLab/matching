@@ -1,5 +1,5 @@
 import type { ApplicantDoc } from "../models/applicant.model.js";
-import { generateChatCompletion, truncateForPrompt } from "./ai.service.js";
+import { generateChatCompletion, truncateForPrompt, UNTRUSTED_PROFILE_NOTICE } from "./ai.service.js";
 
 const FALLBACK_QUESTIONS = [
   "What's your favourite way to spend a weekend?",
@@ -35,10 +35,10 @@ export async function generateIceBreakers(
   a: ApplicantDoc,
   b: ApplicantDoc
 ): Promise<IceBreakerResult> {
-  const prompt = `You are a thoughtful matchmaker. Two people have been matched based on compatibility.
+  const prompt = `You are a thoughtful matchmaker. Two people have been matched based on compatibility. ${UNTRUSTED_PROFILE_NOTICE}
 
-Person A: ${profileSnippet(a)}
-Person B: ${profileSnippet(b)}
+Person A: <profile>${profileSnippet(a)}</profile>
+Person B: <profile>${profileSnippet(b)}</profile>
 
 Generate exactly 5 creative, personal ice-breaking questions (each under 15 words) that Person A can ask Person B via Instagram to start a meaningful conversation. Then generate exactly 3 specific date ideas (each under 12 words) that would suit both of them.
 

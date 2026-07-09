@@ -2,7 +2,7 @@
 import { createHash } from "crypto";
 import { getDb } from "../db/connection.js";
 import { getMatchReranksCollection } from "../db/collections.js";
-import { generateChatCompletion } from "./ai.service.js";
+import { generateChatCompletion, UNTRUSTED_PROFILE_NOTICE } from "./ai.service.js";
 import { buildProfileSnippet } from "./profile-snippet.util.js";
 import { env } from "../config/env.js";
 import type { ApplicantDoc } from "../models/applicant.model.js";
@@ -40,14 +40,14 @@ export function buildRerankPrompt(
   candidates: { id: string; doc: ApplicantDoc }[],
 ): string {
   const candidateLines = candidates
-    .map((c, i) => `${i + 1}. id="${c.id}": ${buildProfileSnippet(c.doc)}`)
+    .map((c, i) => `${i + 1}. id="${c.id}": <profile>${buildProfileSnippet(c.doc)}</profile>`)
     .join("\n");
 
-  return `You are an expert matchmaker. Score how compatible each candidate below is with the target person, grounded only in what's stated — do not invent details. Use the full range; a shortlist usually spans several bands:
+  return `You are an expert matchmaker. Score how compatible each candidate below is with the target person, grounded only in what's stated — do not invent details. ${UNTRUSTED_PROFILE_NOTICE} Use the full range; a shortlist usually spans several bands:
 
 ${RUBRIC}
 
-Target: ${buildProfileSnippet(target)}
+Target: <profile>${buildProfileSnippet(target)}</profile>
 
 Candidates (${candidates.length} total):
 ${candidateLines}

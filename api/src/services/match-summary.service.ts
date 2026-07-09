@@ -1,7 +1,7 @@
 import { ObjectId } from "mongodb";
 import { getDb } from "../db/connection.js";
 import { getMatchesCollection, getApplicantsCollection } from "../db/collections.js";
-import { generateChatCompletion } from "./ai.service.js";
+import { generateChatCompletion, UNTRUSTED_PROFILE_NOTICE } from "./ai.service.js";
 import { buildProfileSnippet } from "./profile-snippet.util.js";
 import { env } from "../config/env.js";
 import type { MatchSummary } from "../models/match.model.js";
@@ -54,11 +54,11 @@ export async function getOrGenerateMatchSummary(
   ]);
   if (!a || !b) return null;
 
-  const prompt = `You are a professional matchmaker writing a compatibility note for two people who have been matched.
+  const prompt = `You are a professional matchmaker writing a compatibility note for two people who have been matched. ${UNTRUSTED_PROFILE_NOTICE}
 
-Person A: ${buildProfileSnippet(a)}
+Person A: <profile>${buildProfileSnippet(a)}</profile>
 
-Person B: ${buildProfileSnippet(b)}
+Person B: <profile>${buildProfileSnippet(b)}</profile>
 
 Write a brief, professional, and warm compatibility note grounded only in what's stated above — do not invent details — with:
 - 2 to 3 "Strengths": genuine points of alignment (one sentence each, max 18 words)
