@@ -9,3 +9,7 @@ process.env.FORM_SECRET = "test-only-form-secret-not-used-in-production-padding-
 process.env.EMBEDDING_PROVIDER = "local";
 process.env.EMBEDDING_MODEL = "nomic-embed-text";
 process.env.EMBEDDING_BASE_URL = "http://localhost:1234/v1";
+// Tests run through Hono's in-memory client (no real socket), so they declare
+// a trusted proxy and use X-Forwarded-For to simulate distinct client IPs —
+// route tests rotate the header to get separate rate-limit buckets.
+process.env.TRUST_PROXY = "true";

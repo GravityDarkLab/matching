@@ -122,6 +122,12 @@ export const env = {
   // Server config
   port: parseInt(optional("PORT", "3001"), 10),
   nodeEnv: optional("NODE_ENV", "development"),
+  // Whether a trusted reverse proxy sits in front of the server. Only when
+  // true are X-Forwarded-For / X-Real-IP believed for the client IP used in
+  // rate limiting and audit logs — a direct-to-Bun deployment must leave this
+  // false, or any client can spoof its IP per request (bypassing per-IP rate
+  // limits and forging audit-log addresses). See utils/request-meta.ts.
+  trustProxy: optional("TRUST_PROXY", "false") === "true",
   // Base URL used in startup logs. Defaults to localhost for dev.
   // Override in test/prod: PUBLIC_URL=https://api.yourdomain.com
   publicUrl: optional("PUBLIC_URL", "").replace(/\/$/, ""),

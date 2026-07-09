@@ -43,6 +43,7 @@ cp api/.env.example api/.env
 | `PORT` | `3001` | Server port |
 | `NODE_ENV` | `development` | Environment |
 | `ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:5173` | CORS origins |
+| `TRUST_PROXY` | `false` | Set `true` only behind a trusted reverse proxy that overwrites `X-Forwarded-For` — enables proxy headers as the client IP for rate limiting and audit logs; otherwise headers are ignored (spoofable) |
 | `ADMIN_JWT_EXPIRY` | `8h` | Admin session JWT lifetime |
 | `APPLICANT_JWT_EXPIRY` | `30d` | Applicant portal session JWT lifetime |
 | `PUBLIC_URL` | _(empty)_ | Base URL for startup logs |
