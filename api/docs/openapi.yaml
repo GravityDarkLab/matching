@@ -2704,7 +2704,9 @@ paths:
 
         **`failed`:** match → `failed`. Applicant status depends on `continuation`:
         - omitted or `"continue"` (default): both applicants → `applied` (re-enters matching pool)
-        - `"break"`: both applicants → `inactive` (deletion in 180 days), same as a `success` outcome
+        - `"break"`: the **reporter** → `inactive` (deletion in 180 days, cancellable),
+          their partner → `applied` (re-enters the pool) — a break is the reporter's
+          choice about their own account only
 
         Optional `outcomeFeedback` (only meaningful for `failed`) is stored on the
         match document and audit-logged as `APPLICANT_REPORT_OUTCOME`. If `tags`

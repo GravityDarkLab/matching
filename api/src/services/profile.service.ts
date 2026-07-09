@@ -658,15 +658,22 @@ export async function reportOutcome(
     return;
   }
 
-  // "failed": default to "continue" (today's behavior) unless the reporter
-  // explicitly chose to take a break — see the warm-dating-experience design
-  // doc for why this stays a single shared choice rather than per-applicant.
+  // "failed": default to "continue" unless the reporter explicitly chose to
+  // take a break. The break is the REPORTER's choice about the REPORTER's
+  // account only — it must never deactivate the partner (or start their
+  // deletion countdown) on someone else's say-so. The partner re-enters the
+  // pool exactly as in the "continue" case.
   if (options?.continuation === "break") {
-    // Same applicant-side effect as a "success" outcome (deactivate +
-    // expire conflicting matches) — only the match's own status differs
-    // ("failed", already set above), reusing the kernel avoids duplicating
-    // the deletionScheduledAt/expiry logic in two places.
-    await applyMatchStatusSideEffects("success", ids);
+    const partnerId = match.applicantAId.equals(actorId)
+      ? match.applicantBId
+      : match.applicantAId;
+    // Reporter: same deactivation as deactivateMyAccount (inactive + grace-
+    // period deletion countdown, cancellable from the dashboard).
+    const deletionScheduledAt = new Date(Date.now() + DELETION_GRACE_MS);
+    await transitionApplicantStatus([actorId], "inactive", { deletionScheduledAt });
+    await expireConflictingMatches([actorId], matchOid);
+    // Partner: back into the matching pool.
+    await applyMatchStatusSideEffects("failed", [partnerId]);
   } else {
     await applyMatchStatusSideEffects("failed", ids);
   }
