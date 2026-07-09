@@ -171,8 +171,9 @@ export async function getCandidates(
 
 // Caps concurrent in-flight rerank calls during a full pass. Without this,
 // N applicants means N simultaneous LLM requests; with it, worst case
-// (15s timeout each, from ai.service.ts) is ceil(N / 5) × 15s instead of
-// N × 15s — e.g. ~7.5 min instead of ~37.5 min for 150 applicants.
+// (45s timeout each, from match-rerank.service.ts) is ceil(N / 5) × 45s
+// instead of N × 45s — and the cache means most passes see nowhere near
+// the worst case.
 const RERANK_CONCURRENCY = 5;
 
 /**
