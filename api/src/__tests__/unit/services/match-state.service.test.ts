@@ -597,45 +597,61 @@ describe("getDatingAnchor", () => {
 });
 
 describe("assertOutcomeEligible", () => {
-  it("does not throw for status other than dating (e.g. in_progress bail-out)", () => {
+  // in_progress: the only legal outcome is the initiator bailing with "failed".
+  // "success" would deactivate both accounts on a match that never reached
+  // dating (identities never revealed), and the target's way out is respond.
+  it("allows the initiator to report 'failed' from in_progress (bail-out)", () => {
     const match = makeMatch({ status: "in_progress" });
-    expect(() => assertOutcomeEligible(match, "failed")).not.toThrow();
-    expect(() => assertOutcomeEligible(match, "success")).not.toThrow();
+    match.initiatorId = match.applicantAId;
+    expect(() => assertOutcomeEligible(match, "failed", match.applicantAId)).not.toThrow();
+  });
+
+  it("rejects 'success' from in_progress for anyone — dating never started", () => {
+    const match = makeMatch({ status: "in_progress" });
+    match.initiatorId = match.applicantAId;
+    expect(() => assertOutcomeEligible(match, "success", match.applicantAId)).toThrow(/once you are dating/);
+    expect(() => assertOutcomeEligible(match, "success", match.applicantBId)).toThrow(/once you are dating/);
+  });
+
+  it("rejects 'failed' from in_progress by the target — declining goes through respond", () => {
+    const match = makeMatch({ status: "in_progress" });
+    match.initiatorId = match.applicantAId;
+    expect(() => assertOutcomeEligible(match, "failed", match.applicantBId)).toThrow(/Only the initiator/);
   });
 
   it("does not throw when dating but no anchor exists (defensive fallback)", () => {
     const match = makeMatch({ status: "dating" });
-    expect(() => assertOutcomeEligible(match, "failed")).not.toThrow();
+    expect(() => assertOutcomeEligible(match, "failed", match.applicantAId)).not.toThrow();
   });
 
   it("throws for 'failed' before day 3", () => {
     const datingStartedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
     const match = makeMatch({ status: "dating", datingStartedAt });
-    expect(() => assertOutcomeEligible(match, "failed")).toThrow(/Too early/);
+    expect(() => assertOutcomeEligible(match, "failed", match.applicantAId)).toThrow(/Too early/);
   });
 
   it("allows 'failed' exactly at day 3", () => {
     const datingStartedAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
     const match = makeMatch({ status: "dating", datingStartedAt });
-    expect(() => assertOutcomeEligible(match, "failed")).not.toThrow();
+    expect(() => assertOutcomeEligible(match, "failed", match.applicantAId)).not.toThrow();
   });
 
   it("throws for 'success' before day 7", () => {
     const datingStartedAt = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
     const match = makeMatch({ status: "dating", datingStartedAt });
-    expect(() => assertOutcomeEligible(match, "success")).toThrow(/Too early/);
+    expect(() => assertOutcomeEligible(match, "success", match.applicantAId)).toThrow(/Too early/);
   });
 
   it("allows 'success' exactly at day 7", () => {
     const datingStartedAt = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const match = makeMatch({ status: "dating", datingStartedAt });
-    expect(() => assertOutcomeEligible(match, "success")).not.toThrow();
+    expect(() => assertOutcomeEligible(match, "success", match.applicantAId)).not.toThrow();
   });
 
   it("allows 'failed' at day 5 (between the two thresholds)", () => {
     const datingStartedAt = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
     const match = makeMatch({ status: "dating", datingStartedAt });
-    expect(() => assertOutcomeEligible(match, "failed")).not.toThrow();
-    expect(() => assertOutcomeEligible(match, "success")).toThrow(/Too early/);
+    expect(() => assertOutcomeEligible(match, "failed", match.applicantAId)).not.toThrow();
+    expect(() => assertOutcomeEligible(match, "success", match.applicantAId)).toThrow(/Too early/);
   });
 });

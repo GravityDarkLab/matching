@@ -615,7 +615,7 @@ export async function reportOutcome(
   if (!match) throw new AppError("Match not found", 404);
 
   assertMatchTransition(match, "outcome", actorId);
-  assertOutcomeEligible(match, outcome);
+  assertOutcomeEligible(match, outcome, actorId);
 
   const now = new Date();
   const ids = [match.applicantAId, match.applicantBId];

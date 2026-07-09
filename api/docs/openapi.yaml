@@ -2692,11 +2692,13 @@ paths:
         - ApplicantCookieAuth: []
         - ApplicantBearerAuth: []
       description: |
-        Either applicant in a `dating` or `in_progress` match can self-report the outcome.
-        Time-gated once the match is `dating` (no gating while still `in_progress` —
-        e.g. the initiator bailing before the partner even responds): `failed` unlocks
-        3 days after `datingStartedAt`, `success` unlocks after 7 days. Returns 403 if
-        called before the applicable threshold.
+        Either applicant in a `dating` match can self-report the outcome. While the
+        match is still `in_progress`, the only legal report is the **initiator**
+        bailing out with `failed` before the partner responds — `success` requires an
+        actual dating phase (409), and the target declines via the respond endpoint
+        (403). Once `dating`, outcomes are time-gated: `failed` unlocks 3 days after
+        `datingStartedAt`, `success` unlocks after 7 days. Returns 403 if called
+        before the applicable threshold.
 
         **`success`:** match → `success`; both applicants → `inactive` (deletion in 180 days)
 

@@ -229,15 +229,37 @@ export function getDatingAnchor(match: MatchDoc): Date | undefined {
 }
 
 /**
- * Throws if `outcome` can't be reported yet for `match`. Only enforced once
- * dating has actually started (status "dating" with a known anchor) —
- * reporting from "in_progress" (e.g. the initiator bailing before the
- * partner even responds) is untouched by this gate.
+ * Throws if `outcome` can't be reported for `match` by `actorId`.
+ *
+ * From "in_progress" the only legal outcome is the initiator bailing out
+ * ("failed") before the partner responds — "success" requires an actual
+ * dating phase (identities are only revealed at "dating", so a "success"
+ * here would let either side deactivate both accounts on a match that
+ * never happened), and the target's way out is the respond endpoint.
+ *
+ * From "dating", outcomes are day-gated against the dating anchor.
  */
 export function assertOutcomeEligible(
   match: MatchDoc,
-  outcome: "success" | "failed"
+  outcome: "success" | "failed",
+  actorId: ObjectId
 ): void {
+  if (match.status === "in_progress") {
+    if (outcome === "success") {
+      throw new AppError(
+        "A match can only be reported successful once you are dating — respond to the contact request first",
+        409
+      );
+    }
+    if (!match.initiatorId?.equals(actorId)) {
+      throw new AppError(
+        "Only the initiator can end a pending contact request — use the respond endpoint to decline",
+        403
+      );
+    }
+    return;
+  }
+
   if (match.status !== "dating") return;
   const anchor = getDatingAnchor(match);
   if (!anchor) return;
