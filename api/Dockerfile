@@ -2,14 +2,14 @@
 # docker build -f api/Dockerfile ./api
 
 # ─── Stage 1: install production dependencies ────────────────────────────────
-FROM oven/bun:1.3.14-alpine AS deps
+FROM oven/bun:1.4.0-alpine AS deps
 WORKDIR /app
 
 COPY package.json bun.lock ./
 RUN bun install --frozen --production
 
 # ─── Stage 2: lean production image ──────────────────────────────────────────
-FROM oven/bun:1.3.14-alpine AS runner
+FROM oven/bun:1.4.0-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
