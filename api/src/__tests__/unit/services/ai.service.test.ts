@@ -3,14 +3,16 @@
 // verbose applicant doesn't blow up input token cost on every match.
 //
 // Also: buildChatRequestBody — the OpenAI request-shape logic
-// generateChatCompletion uses, extracted as a pure function so it's testable
-// without mock.module()-ing config/env.js, which would replace it for every
-// other test file in a full-suite run. Every quirk here was discovered
-// empirically against real OpenAI responses this session (HTTP 400s with
-// explicit error messages), not guessed — see
-// docs/llm-listwise-rerank-matching-score.md §5.7.
-import { describe, it, expect } from "bun:test";
-import { truncateForPrompt, buildChatRequestBody } from "../../../services/ai.service.js";
+// generateChatCompletion uses, kept as a pure function so each quirk can be
+// asserted directly. Every quirk was discovered empirically against real
+// OpenAI responses (HTTP 400s with explicit error messages), not guessed —
+// see docs/llm-listwise-rerank-matching-score.md §5.7.
+//
+// And generateChatCompletion itself, with fetch stubbed: the request it
+// sends, and that it never throws — every failure mode returns "" so callers
+// (rerank, match summary, ice-breakers) fall back instead of erroring.
+import { describe, it, expect, spyOn, afterEach } from "bun:test";
+import { truncateForPrompt, buildChatRequestBody, generateChatCompletion } from "../../../services/ai.service.js";
 
 describe("truncateForPrompt", () => {
   it("returns short text unchanged", () => {
@@ -91,5 +93,73 @@ describe("buildChatRequestBody", () => {
   it("omits reasoning_effort when not given", () => {
     const body = buildChatRequestBody("gpt-5.4-mini", "prompt", {});
     expect(body).not.toHaveProperty("reasoning_effort");
+  });
+});
+
+describe("generateChatCompletion", () => {
+  const spies: { mockRestore: () => void }[] = [];
+  afterEach(() => { while (spies.length) spies.pop()!.mockRestore(); });
+
+  function stubFetch(result: Response | Error) {
+    const spy = spyOn(globalThis, "fetch");
+    if (result instanceof Error) spy.mockRejectedValue(result);
+    else spy.mockResolvedValue(result);
+    spies.push(spy);
+    return spy;
+  }
+  function quiet(method: "error" | "warn") {
+    const spy = spyOn(console, method).mockImplementation(() => {});
+    spies.push(spy);
+    return spy;
+  }
+  const chatResponse = (content: string, finish_reason = "stop") =>
+    new Response(JSON.stringify({ choices: [{ message: { content }, finish_reason }] }), { status: 200 });
+
+  it("POSTs the built request body to OpenAI with the configured key", async () => {
+    const spy = stubFetch(chatResponse("hi"));
+
+    await generateChatCompletion("hello", { maxTokens: 123 });
+
+    const [url, init] = spy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.openai.com/v1/chat/completions");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${process.env.OPENAI_API_KEY}`);
+    expect(JSON.parse(init.body as string)).toEqual(
+      buildChatRequestBody(process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini", "hello", { maxTokens: 123 })
+    );
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("returns the assistant message, trimmed", async () => {
+    stubFetch(chatResponse("  {\"ok\":true}\n"));
+    expect(await generateChatCompletion("prompt")).toBe('{"ok":true}');
+  });
+
+  it("returns \"\" on a non-2xx response instead of throwing", async () => {
+    const errors = quiet("error");
+    stubFetch(new Response('{"error":"insufficient_quota"}', { status: 429 }));
+
+    expect(await generateChatCompletion("prompt")).toBe("");
+    expect(String(errors.mock.calls[0][0])).toContain("429");
+  });
+
+  it("returns \"\" when the request itself fails (network error or timeout)", async () => {
+    quiet("error");
+    stubFetch(Object.assign(new Error("The operation timed out."), { name: "TimeoutError" }));
+
+    expect(await generateChatCompletion("prompt")).toBe("");
+  });
+
+  it("returns \"\" when the response has no choices", async () => {
+    stubFetch(new Response(JSON.stringify({ choices: [] }), { status: 200 }));
+    expect(await generateChatCompletion("prompt")).toBe("");
+  });
+
+  it("still returns the content but warns when the model stopped early (finish_reason=length)", async () => {
+    const warns = quiet("warn");
+    stubFetch(chatResponse('{"partial":', "length"));
+
+    expect(await generateChatCompletion("prompt")).toBe('{"partial":');
+    expect(String(warns.mock.calls[0][0])).toContain('finish_reason="length"');
   });
 });

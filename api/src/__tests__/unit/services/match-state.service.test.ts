@@ -4,14 +4,8 @@
 // the state-machine guard (assertMatchTransition), the status-transition
 // side effects (transitionApplicantStatus / applyMatchStatusSideEffects /
 // recalcOrphanedStatuses), the conflicting-match expiry helper
-// (expireConflictingMatches), and the applicant-facing view projection
-// (toMatchView).
-//
-// NOTE: promoteAppliedToMatched is not exercised here — matching.routes.test.ts
-// mock.module()s services/match-state.service.js to stub out just that export
-// process-globally, which replaces it in full-suite runs (same constraint
-// documented in unit/matching/proposals.test.ts). It's covered end-to-end via
-// POST /matching/run in the route tests and the matching smoke flow.
+// (expireConflictingMatches), the applicant-facing view projection
+// (toMatchView), and the post-matching-pass promotion (promoteAppliedToMatched).
 import { describe, it, expect, mock, beforeEach } from "bun:test";
 import { ObjectId } from "mongodb";
 import type { MatchDoc } from "../../../models/match.model.js";
@@ -54,6 +48,8 @@ import {
   daysSince,
   getDatingAnchor,
   assertOutcomeEligible,
+  promoteAppliedToMatched,
+  PORTAL_MIN_SCORE,
 } from "../../../services/match-state.service.js";
 
 beforeEach(() => {
@@ -699,5 +695,46 @@ describe("assertOutcomeEligible", () => {
     const match = makeMatch({ status: "dating", datingStartedAt });
     expect(() => assertOutcomeEligible(match, "failed", match.applicantAId)).not.toThrow();
     expect(() => assertOutcomeEligible(match, "success", match.applicantAId)).toThrow(/Too early/);
+  });
+});
+
+// ── promoteAppliedToMatched ───────────────────────────────────────────────────
+
+describe("promoteAppliedToMatched", () => {
+  it("returns 0 without touching applicants when no proposed match clears the portal floor", async () => {
+    fakeMatches.find.mockImplementation(() => ({ toArray: async () => [] }));
+
+    expect(await promoteAppliedToMatched()).toBe(0);
+    expect(fakeApplicants.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("only looks at proposed matches at or above PORTAL_MIN_SCORE", async () => {
+    await promoteAppliedToMatched();
+
+    const [filter] = fakeMatches.find.mock.calls[0] as any[];
+    expect(filter).toEqual({ status: "proposed", score: { $gte: PORTAL_MIN_SCORE } });
+  });
+
+  it("promotes both participants of every qualifying match, once each, and only from 'applied'", async () => {
+    const shared = new ObjectId();
+    const b = new ObjectId();
+    const c = new ObjectId();
+    fakeMatches.find.mockImplementation(() => ({
+      toArray: async () => [
+        makeMatch({ applicantAId: shared, applicantBId: b }),
+        makeMatch({ applicantAId: shared, applicantBId: c }),
+      ],
+    }));
+    fakeApplicants.updateMany.mockResolvedValue({ modifiedCount: 2 });
+
+    const promoted = await promoteAppliedToMatched();
+
+    const [filter, update] = fakeApplicants.updateMany.mock.calls[0] as any[];
+    const ids = (filter._id.$in as ObjectId[]).map((id) => id.toHexString()).sort();
+    expect(ids).toEqual([shared, b, c].map((id) => id.toHexString()).sort()); // `shared` deduped
+    // Never demote someone already dating, or resurrect an inactive account.
+    expect(filter.status).toBe("applied");
+    expect(update.$set.status).toBe("matched");
+    expect(promoted).toBe(2); // modifiedCount — applicants already past "applied" don't count
   });
 });
