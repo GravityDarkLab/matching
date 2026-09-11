@@ -1,4 +1,5 @@
-import { Controller, useWatch } from 'react-hook-form'
+import { useEffect, useRef } from 'react'
+import { Controller, useController, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import type { Control, FieldErrors } from 'react-hook-form'
 import type { FormValues } from '../types/form'
@@ -29,6 +30,26 @@ export default function Step4Preferences({ control, errors }: Props) {
   const { t } = useTranslation()
   const maxAgeGap = useWatch({ control, name: 'max_age_gap' })
   const showDirectional = typeof maxAgeGap === 'number' && maxAgeGap > 0
+
+  const { field: openToOlderField } = useController({ name: 'open_to_older', control })
+  const { field: openToYoungerField } = useController({ name: 'open_to_younger', control })
+
+  // react-hook-form keeps a field's last value after it unmounts (shouldUnregister
+  // defaults to false), and age.filter.ts enforces open_to_older/open_to_younger as
+  // independent hard vetoes regardless of max_age_gap — so clearing the gap after
+  // setting one of these must reset it too, or a stale `false` silently keeps
+  // vetoing older/younger partners with no way for the user to see or undo it.
+  // Only reset on an actual true -> false transition, not on mount, so loading an
+  // existing profile that already has max_age_gap blank + a real stored
+  // preference (a valid state) doesn't get its data clobbered.
+  const wasDirectionalRef = useRef(showDirectional)
+  useEffect(() => {
+    if (wasDirectionalRef.current && !showDirectional) {
+      openToOlderField.onChange(null)
+      openToYoungerField.onChange(null)
+    }
+    wasDirectionalRef.current = showDirectional
+  }, [showDirectional, openToOlderField, openToYoungerField])
 
   return (
     <div className="flex flex-col gap-6">
@@ -72,20 +93,16 @@ export default function Step4Preferences({ control, errors }: Props) {
           />
           {showDirectional && (
             <div className="flex flex-col gap-2 ps-1">
-              <Controller name="open_to_older" control={control} render={({ field }) => (
-                <Toggle
-                  label={t('steps.s4.openToOlder')}
-                  value={field.value ?? false}
-                  onChange={field.onChange}
-                />
-              )} />
-              <Controller name="open_to_younger" control={control} render={({ field }) => (
-                <Toggle
-                  label={t('steps.s4.openToYounger')}
-                  value={field.value ?? false}
-                  onChange={field.onChange}
-                />
-              )} />
+              <Toggle
+                label={t('steps.s4.openToOlder')}
+                value={openToOlderField.value ?? false}
+                onChange={openToOlderField.onChange}
+              />
+              <Toggle
+                label={t('steps.s4.openToYounger')}
+                value={openToYoungerField.value ?? false}
+                onChange={openToYoungerField.onChange}
+              />
             </div>
           )}
         </div>
