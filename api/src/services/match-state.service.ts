@@ -368,9 +368,16 @@ export async function recalcOrphanedStatuses(
 
 /**
  * Applies the applicant-status side effects of a match transitioning to
- * "dating", "success", or "failed" — shared by the admin override
- * (`updateMatch`) and the applicant-facing flows (`respondToContact`,
- * `reportOutcome`) so the two can't drift apart.
+ * "dating", "success", "failed", "declined", or "expired" — shared by the
+ * admin override (`updateMatch`) and the applicant-facing flows
+ * (`respondToContact`, `reportOutcome`) so the two can't drift apart.
+ *
+ * The admin override has no from-state check (an admin can move a match
+ * straight from "dating" to "declined"/"expired"), so "declined"/"expired"
+ * recalculate both applicants' status from whatever matches they actually
+ * still have — the same recovery `recalcOrphanedStatuses` already does for
+ * account-deletion cleanup — instead of leaving them stuck at "dating" with
+ * no active match to show for it.
  */
 export async function applyMatchStatusSideEffects(
   status: MatchStatus,
@@ -386,5 +393,7 @@ export async function applyMatchStatusSideEffects(
     await expireConflictingMatches(applicantIds, excludeMatchId);
   } else if (status === "failed") {
     await transitionApplicantStatus(applicantIds, "applied");
+  } else if (status === "declined" || status === "expired") {
+    await recalcOrphanedStatuses(applicantIds);
   }
 }

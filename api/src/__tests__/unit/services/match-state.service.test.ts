@@ -248,7 +248,7 @@ describe("applyMatchStatusSideEffects", () => {
     expect(fakeMatches.updateMany).not.toHaveBeenCalled();
   });
 
-  it.each(["proposed", "in_progress", "declined", "expired"] as const)(
+  it.each(["proposed", "in_progress"] as const)(
     "%s: no applicant or match side effects",
     async (status) => {
       const ids = [new ObjectId()];
@@ -258,6 +258,52 @@ describe("applyMatchStatusSideEffects", () => {
       expect(fakeMatches.updateMany).not.toHaveBeenCalled();
     }
   );
+
+  // Regression: an admin overriding a match straight from "dating" to
+  // "declined"/"expired" (the PATCH endpoint has no from-state check) used to
+  // be a complete no-op here, leaving both applicants permanently stuck at
+  // ApplicantStatus "dating" with no active match to show for it — invisible
+  // to every future matching run. Reuses recalcOrphanedStatuses (the same
+  // helper account-deletion cleanup relies on) so the applicants' status is
+  // re-derived from whatever matches they actually still have.
+  it.each(["declined", "expired"] as const)(
+    "%s: recalculates both applicants' status from their remaining matches",
+    async (status) => {
+      const idA = new ObjectId();
+      const idB = new ObjectId();
+      fakeMatches.find.mockImplementation(() => ({ toArray: async () => [] }));
+
+      await applyMatchStatusSideEffects(status, [idA, idB]);
+
+      expect(fakeMatches.find).toHaveBeenCalledTimes(2); // once per applicant
+      expect(fakeApplicants.updateOne).toHaveBeenCalledTimes(2);
+      // No matches remain for either applicant -> both fall back to "applied"
+      for (const call of fakeApplicants.updateOne.mock.calls as any[]) {
+        expect(call[1].$set.status).toBe("applied");
+      }
+    }
+  );
+
+  it("declined: an applicant with another dating match stays 'dating', not orphaned to 'applied'", async () => {
+    const idA = new ObjectId();
+    const idB = new ObjectId();
+    fakeMatches.find.mockImplementation((filter: any) =>
+      filter.$or[0].applicantAId.equals(idA)
+        ? { toArray: async () => [makeMatch({ status: "dating" })] }
+        : { toArray: async () => [] }
+    );
+
+    await applyMatchStatusSideEffects("declined", [idA, idB]);
+
+    const callForA = (fakeApplicants.updateOne.mock.calls as any[]).find(
+      (call) => call[0]._id.equals(idA)
+    );
+    const callForB = (fakeApplicants.updateOne.mock.calls as any[]).find(
+      (call) => call[0]._id.equals(idB)
+    );
+    expect(callForA![1].$set.status).toBe("dating");
+    expect(callForB![1].$set.status).toBe("applied");
+  });
 });
 
 // ── expireConflictingMatches ───────────────────────────────────────────────────
