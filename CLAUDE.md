@@ -34,7 +34,7 @@ bun run test:api          # API tests only (no DB required)
 bun run test:frontend     # Frontend tests only
 
 # API tests with watch mode (from api/)
-bun test --watch --preload ./src/__tests__/setup.ts ./src/__tests__
+bun test --isolate --watch --preload ./src/__tests__/setup.ts ./src/__tests__
 
 # Seed database
 bun run seed              # Interactive: questionnaire / applicants / both
@@ -120,6 +120,8 @@ Every user-facing string goes through i18next (`i18n/locales/{en,fr,de,ar}.json`
 ## Testing
 
 **API tests** use Bun's built-in test runner. `src/__tests__/setup.ts` is preloaded and sets all required env vars — tests run without a real DB or external services. Test files live under `src/__tests__/{unit,integration,routes}/`.
+
+The suite runs with `--isolate` (each file gets a fresh module registry). Bun's `mock.module()` is otherwise process-global, so files stubbing the same module with different shapes break each other depending on file order — which differs between macOS and Linux CI. Route tests `await import()` their route module *after* their `mock.module()` calls: static imports evaluate first, and routes capture their rate limiter by value at definition time.
 
 **Frontend tests** use Vitest + jsdom + Testing Library. Setup file is `src/__tests__/setup.ts`; `VITE_INVITE_KEY` is injected via `vitest.config.ts`.
 

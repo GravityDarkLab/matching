@@ -52,7 +52,10 @@ mock.module("../../middleware/audit.middleware.js", () => ({
 }));
 
 import { Hono } from "hono";
-import { adminRoutes } from "../../routes/admin.routes.js";
+// Dynamic, not static: static imports evaluate before this file's
+// mock.module() calls run, and a route captures its rate limiter by value
+// at definition time — a static import would bake in the real limiter.
+const { adminRoutes } = await import("../../routes/admin.routes.js");
 import { signAdminToken } from "../../middleware/auth.middleware.js";
 
 // ── Test app ──────────────────────────────────────────────────────────────────

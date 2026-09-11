@@ -61,6 +61,10 @@ beforeEach(() => {
   fakeRerankCol.findOne.mockClear();
   fakeRerankCol.updateOne.mockClear();
   mockGenerateChatCompletion.mockClear();
+  // mockClear() keeps implementations — restore the defaults so a test that
+  // makes the cache throw can't leak that into whichever test runs next.
+  fakeRerankCol.findOne.mockImplementation(async () => cachedDoc);
+  fakeRerankCol.updateOne.mockImplementation(async () => ({}));
 });
 
 describe("buildRerankPrompt", () => {

@@ -33,7 +33,10 @@ mock.module("../../services/form.service.js", () => ({
 }));
 
 import { Hono } from "hono";
-import { formRoutes } from "../../routes/form.routes.js";
+// Dynamic, not static: static imports evaluate before this file's
+// mock.module() calls run, and a route captures its rate limiter by value
+// at definition time — a static import would bake in the real limiter.
+const { formRoutes } = await import("../../routes/form.routes.js");
 import { generateSubmissionKey } from "../../privacy/submission-key.js";
 import { ObjectId } from "mongodb";
 
