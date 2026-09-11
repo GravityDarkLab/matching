@@ -15,15 +15,18 @@ import {
   deactivateMyAccount,
   cancelAccountDeletion,
   deleteMyAccountNow,
+  acknowledgeDistanceNudge,
 } from "../services/profile.service.js";
+import { getOrGenerateMatchSummary } from "../services/match-summary.service.js";
 import {
   signApplicantToken,
   tryGetApplicantSession,
-  APPLICANT_COOKIE,
   APPLICANT_COOKIE_MAX_AGE,
 } from "../middleware/applicant.auth.middleware.js";
-import { generateReadablePassword } from "../privacy/magic-token.js";
+import { APPLICANT_COOKIE_NAME } from "../config/constants.js";
+import { generateReadablePassword } from "../privacy/password-generator.js";
 import { errorResponse } from "../utils/error-response.js";
+import { getRequestMeta } from "../utils/request-meta.js";
 import type { ValidatedContext } from "../utils/validated-context.js";
 import type {
   ProfileLoginInput,
@@ -33,11 +36,12 @@ import type {
   MatchQueryInput,
   RespondInput,
   OutcomeInput,
+  NudgeAckInput,
 } from "../validators/profile.validator.js";
 import { env } from "../config/env.js";
 
 function setSessionCookie(c: Context, token: string): void {
-  setCookie(c, APPLICANT_COOKIE, token, {
+  setCookie(c, APPLICANT_COOKIE_NAME, token, {
     httpOnly: true,
     secure: env.nodeEnv === "production",
     sameSite: "Lax",
@@ -128,20 +132,16 @@ export async function updateAnswers(c: ValidatedContext<{ json: UpdateAnswersInp
 export async function matches(c: ValidatedContext<{ query: MatchQueryInput }>): Promise<Response> {
   const applicantId = c.get("applicantId") as string;
   const { threshold, limit } = c.req.valid("query");
-  const ipAddress = c.req.header("X-Forwarded-For") ?? c.req.header("X-Real-IP") ?? "unknown";
-  const userAgent = c.req.header("User-Agent") ?? "unknown";
-  const data = await getMyMatches(applicantId, threshold, limit, { ipAddress, userAgent });
+  const data = await getMyMatches(applicantId, threshold, limit, getRequestMeta(c));
   return c.json({ success: true, data });
 }
 
 export async function contact(c: Context): Promise<Response> {
   const applicantId = c.get("applicantId") as string;
   const matchId     = c.req.param("id") as string;
-  const ipAddress   = c.req.header("X-Forwarded-For") ?? c.req.header("X-Real-IP") ?? "unknown";
-  const userAgent   = c.req.header("User-Agent") ?? "unknown";
 
   try {
-    const result = await requestContact(applicantId, matchId, { ipAddress, userAgent });
+    const result = await requestContact(applicantId, matchId);
     return c.json({ success: true, data: result });
   } catch (err: unknown) {
     return errorResponse(c, err);
@@ -154,8 +154,8 @@ export async function respond(c: ValidatedContext<{ json: RespondInput }>): Prom
   const { accept }  = c.req.valid("json");
 
   try {
-    await respondToContact(applicantId, matchId, accept);
-    return c.json({ success: true });
+    const { partnerInstagram, partnerFullName } = await respondToContact(applicantId, matchId, accept, getRequestMeta(c));
+    return c.json({ success: true, data: { partnerInstagram, partnerFullName } });
   } catch (err: unknown) {
     return errorResponse(c, err);
   }
@@ -176,10 +176,29 @@ export async function withdraw(c: Context): Promise<Response> {
 export async function outcome(c: ValidatedContext<{ json: OutcomeInput }>): Promise<Response> {
   const applicantId = c.get("applicantId") as string;
   const matchId     = c.req.param("id") as string;
-  const { outcome: out } = c.req.valid("json");
+  const { outcome: out, outcomeFeedback, continuation } = c.req.valid("json");
 
   try {
-    await reportOutcome(applicantId, matchId, out);
+    await reportOutcome(
+      applicantId,
+      matchId,
+      out,
+      { feedback: outcomeFeedback, continuation },
+      getRequestMeta(c),
+    );
+    return c.json({ success: true });
+  } catch (err: unknown) {
+    return errorResponse(c, err);
+  }
+}
+
+export async function nudgeAck(c: ValidatedContext<{ json: NudgeAckInput }>): Promise<Response> {
+  const applicantId = c.get("applicantId") as string;
+  const matchId     = c.req.param("id") as string;
+  const { openUp }  = c.req.valid("json");
+
+  try {
+    await acknowledgeDistanceNudge(applicantId, matchId, openUp);
     return c.json({ success: true });
   } catch (err: unknown) {
     return errorResponse(c, err);
@@ -187,15 +206,28 @@ export async function outcome(c: ValidatedContext<{ json: OutcomeInput }>): Prom
 }
 
 export async function logout(c: Context): Promise<Response> {
-  deleteCookie(c, APPLICANT_COOKIE, { path: "/" });
+  deleteCookie(c, APPLICANT_COOKIE_NAME, { path: "/" });
   return c.json({ success: true });
 }
 
 export async function deactivate(c: Context): Promise<Response> {
   const applicantId = c.get("applicantId") as string;
   await deactivateMyAccount(applicantId);
-  deleteCookie(c, APPLICANT_COOKIE, { path: "/" });
+  deleteCookie(c, APPLICANT_COOKIE_NAME, { path: "/" });
   return c.json({ success: true });
+}
+
+export async function matchSummary(c: Context): Promise<Response> {
+  const applicantId = c.get("applicantId") as string;
+  const matchId     = c.req.param("id") as string;
+
+  try {
+    const summary = await getOrGenerateMatchSummary(matchId, applicantId);
+    if (!summary) return c.json({ success: false, error: "Not found" }, 404);
+    return c.json({ success: true, data: summary });
+  } catch (err: unknown) {
+    return errorResponse(c, err);
+  }
 }
 
 export async function cancelDeletion(c: Context): Promise<Response> {
@@ -211,12 +243,10 @@ export async function cancelDeletion(c: Context): Promise<Response> {
 
 export async function deleteNow(c: Context): Promise<Response> {
   const applicantId = c.get("applicantId") as string;
-  const ipAddress   = c.req.header("X-Forwarded-For") ?? c.req.header("X-Real-IP") ?? "unknown";
-  const userAgent   = c.req.header("User-Agent") ?? "unknown";
 
   try {
-    await deleteMyAccountNow(applicantId, { ipAddress, userAgent });
-    deleteCookie(c, APPLICANT_COOKIE, { path: "/" });
+    await deleteMyAccountNow(applicantId, getRequestMeta(c));
+    deleteCookie(c, APPLICANT_COOKIE_NAME, { path: "/" });
     return c.json({ success: true });
   } catch (err: unknown) {
     return errorResponse(c, err);

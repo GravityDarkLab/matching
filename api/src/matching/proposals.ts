@@ -12,6 +12,8 @@ export interface CoupleProposal {
   score: number;
   /** Per-dimension breakdown from whichever direction was scored */
   breakdown: Record<string, number>;
+  /** LLM rerank reasoning from whichever direction was scored; "" if unavailable */
+  llmReasoning: string;
 }
 
 export type ProposalPairAction = "insert" | "revive" | "skip";
@@ -51,13 +53,15 @@ export function generateCoupleProposals(
     applicantMap.set(a._id.toHexString(), a);
   }
 
-  // Build directed score/breakdown maps: "aId→bId" → value
+  // Build directed score/breakdown/reasoning maps: "aId→bId" → value
   const scoreMap = new Map<string, number>();
   const breakdownMap = new Map<string, Record<string, number>>();
+  const reasoningMap = new Map<string, string>();
   for (const [aId, candidates] of Object.entries(results)) {
     for (const cand of candidates) {
       scoreMap.set(`${aId}→${cand.applicantId}`, cand.score);
       breakdownMap.set(`${aId}→${cand.applicantId}`, cand.breakdown);
+      reasoningMap.set(`${aId}→${cand.applicantId}`, cand.llmReasoning);
     }
   }
 
@@ -87,6 +91,11 @@ export function generateCoupleProposals(
         breakdownMap.get(`${secondId}→${firstId}`) ??
         {};
 
+      const llmReasoning =
+        reasoningMap.get(`${firstId}→${secondId}`) ||
+        reasoningMap.get(`${secondId}→${firstId}`) ||
+        "";
+
       proposals.push({
         applicantAId:    applicantA._id,
         applicantAAlias: applicantA.alias,
@@ -94,6 +103,7 @@ export function generateCoupleProposals(
         applicantBAlias: applicantB.alias,
         score:           symScore,
         breakdown,
+        llmReasoning,
       });
     }
   }

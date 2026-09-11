@@ -4,6 +4,7 @@ import type { Control, FieldErrors } from 'react-hook-form'
 import type { FormValues } from '../types/form'
 import Textarea from '../components/ui/Textarea'
 import Slider from '../components/ui/Slider'
+import WordCountHint from '../components/ui/WordCountHint'
 
 interface Props { control: Control<FormValues>; errors: FieldErrors<FormValues> }
 export const FIELDS: (keyof FormValues)[] = ['physical_affection_importance', 'dream_first_date', 'disclaimer_agreed']
@@ -25,8 +26,11 @@ export default function Step5Final({ control, errors }: Props) {
           </div>
         )} />
         <Controller name="dream_first_date" control={control} render={({ field }) => (
-          <Textarea label={t('steps.s5.firstDate')} placeholder={t('steps.s5.firstDatePlaceholder')}
-            rows={4} error={errors.dream_first_date?.message} required {...field} />
+          <div className="flex flex-col gap-1">
+            <Textarea label={t('steps.s5.firstDate')} placeholder={t('steps.s5.firstDatePlaceholder')}
+              rows={4} error={errors.dream_first_date?.message} required {...field} />
+            <WordCountHint value={field.value as string} />
+          </div>
         )} />
         <Controller name="disclaimer_agreed" control={control} render={({ field }) => (
           <div className="flex flex-col gap-1.5">

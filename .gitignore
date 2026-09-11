@@ -20,3 +20,9 @@ Thumbs.db
 
 # Claude
 .claude/
+
+.superpowers/
+
+# Local-only planning artifacts (design specs, implementation plans) —
+# useful while working, not meant to live in the repo permanently
+docs/superpowers/

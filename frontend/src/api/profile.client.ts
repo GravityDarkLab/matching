@@ -1,6 +1,7 @@
 import type { ApplicantStatus, MatchStatus } from '../types/status'
+import { API_BASE } from '../config/api'
 
-const BASE = (import.meta.env.VITE_API_URL ?? 'http://localhost:3001') + '/api/v1'
+const BASE = API_BASE + '/api/v1'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -12,31 +13,41 @@ export interface MatchView {
   partnerAlias: string
   score: number // 0–1
   breakdown?: Record<string, number> // per-dimension scores from the matching algorithm
+  llmReasoning?: string // grounded explanation from the LLM rerank stage that produced `score`
   status: MatchStatus
   perspective: MatchPerspective
   contactRequestedAt?: string // ISO date string
   iceBreakers?: string[] // only for initiator in in_progress/dating
   dateIdeas?: string[] // only for initiator in in_progress/dating
-  targetInstagram?: string // revealed via /contact while the match is in_progress
   partnerProfile?: Record<string, unknown> // partner's public questionnaire answers
-  partnerInstagram?: string // partner's handle, only for in_progress/dating matches
+  partnerInstagram?: string // partner's handle — only ever set once status is "dating" (mutual reveal)
+  partnerFullName?: string
+  datingStartedAt?: string
 }
 
 export interface ProfileView {
   applicantId: string
   alias: string
+  fullName: string | null
   status: ApplicantStatus
   scoreThreshold: number
   createdAt: string
   deletionScheduledAt: string | null
+  distanceNudge: { matchId: string } | null
 }
 
 export type LoginResult = { type: 'first_login' } | { type: 'password_required' } | { type: 'ok' }
 
 export interface ContactResult {
-  targetInstagram: string
   iceBreakers: string[]
   dateIdeas: string[]
+}
+
+export interface MatchSummary {
+  pros: string[]
+  cons: string[]
+  generatedAt: string
+  model: string
 }
 
 // ── Core request helper ──────────────────────────────────────────────────────
@@ -151,11 +162,15 @@ export async function requestContact(matchId: string): Promise<ContactResult> {
   return body.data
 }
 
-export async function respondToContact(matchId: string, accept: boolean): Promise<void> {
-  await profileRequest<unknown>(
+export async function respondToContact(
+  matchId: string,
+  accept: boolean,
+): Promise<{ partnerInstagram: string | null; partnerFullName: string | null }> {
+  const body = await profileRequest<{ data: { partnerInstagram: string | null; partnerFullName: string | null } }>(
     `/profile/matches/${matchId}/respond`,
     { method: 'POST', body: JSON.stringify({ accept }) },
   )
+  return body.data
 }
 
 /** Initiator backs out after the reveal — match is declined permanently. */
@@ -166,14 +181,35 @@ export async function withdrawContact(matchId: string): Promise<void> {
   )
 }
 
+export interface OutcomeFeedback {
+  tags: string[]
+  note?: string
+}
+
 export async function reportOutcome(
   matchId: string,
   outcome: 'success' | 'failed',
+  options?: { feedback?: OutcomeFeedback; continuation?: 'continue' | 'break' },
 ): Promise<void> {
   await profileRequest<unknown>(
     `/profile/matches/${matchId}/outcome`,
-    { method: 'POST', body: JSON.stringify({ outcome }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        outcome,
+        outcomeFeedback: options?.feedback,
+        continuation: options?.continuation,
+      }),
+    },
   )
+}
+
+export async function getMatchSummary(matchId: string): Promise<MatchSummary> {
+  const body = await profileRequest<{ data: MatchSummary }>(
+    `/profile/matches/${matchId}/summary`,
+    { method: 'GET' },
+  )
+  return body.data
 }
 
 export async function deactivateAccount(): Promise<void> {
@@ -183,6 +219,13 @@ export async function deactivateAccount(): Promise<void> {
 /** Cancels a pending deletion and restores the account to the matching pool. */
 export async function cancelAccountDeletion(): Promise<void> {
   await profileRequest<unknown>('/profile/cancel-deletion', { method: 'POST' })
+}
+
+export async function acknowledgeDistanceNudge(matchId: string, openUp: boolean): Promise<void> {
+  await profileRequest<unknown>(
+    `/profile/matches/${matchId}/nudge-ack`,
+    { method: 'POST', body: JSON.stringify({ openUp }) },
+  )
 }
 
 /** Immediately and irreversibly deletes the account, bypassing the grace period. */

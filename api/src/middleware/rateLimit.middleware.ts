@@ -1,4 +1,5 @@
 import { Context, Next } from "hono";
+import { getClientIp } from "../utils/request-meta.js";
 
 interface RateLimitRecord {
   timestamps: number[];
@@ -56,11 +57,7 @@ export function createRateLimiter(options: {
     next: Next
   ): Promise<Response | void> {
     // Determine the unique key for this request (default to IP address)
-    const key = keyFn
-      ? keyFn(c)
-      : (c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
-        c.req.header("x-real-ip") ??
-        "unknown");
+    const key = keyFn ? keyFn(c) : getClientIp(c);
 
     const now = Date.now();
     const cutoff = now - windowMs;
@@ -96,11 +93,12 @@ export function createRateLimiter(options: {
 }
 
 /**
- * Rate limiter for public form submission: 100 requests per 10 minutes.
+ * Rate limiter for public form submission: 3 submissions per hour per IP.
+ * High enough to allow retries; low enough to stop automated loops.
  */
 export const formSubmitRateLimiter = createRateLimiter({
-  windowMs: 10 * 60 * 1000,
-  maxRequests: 100,
+  windowMs: 60 * 60 * 1000,
+  maxRequests: 3,
   message: "Too many form submissions. Please wait before trying again.",
 });
 

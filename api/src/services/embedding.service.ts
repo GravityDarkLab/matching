@@ -10,15 +10,22 @@
  *
  *   2. Matching run starts → prepare() calls getOrComputeEmbeddings().
  *      - Applicants whose embeddings are already stored → loaded from DB (no API call).
- *      - Applicants with missing or stale embeddings (model changed) → computed
- *        in a single batch request and saved to DB.
+ *      - Applicants with missing or stale embeddings → computed in a single batch
+ *        request and saved to DB.
  *
  * ## Stale detection
  *
- *   The `model` field in EmbeddingDoc is compared against the currently
- *   configured EMBEDDING_MODEL. If they differ, the stored vectors are in a
- *   different space and cannot be compared with new ones — they are re-computed
- *   and overwritten automatically.
+ *   Embeddings are stale when:
+ *   - The configured EMBEDDING_MODEL has changed (different vector space).
+ *   - CURRENT_TEXT_VERSION doesn't match the stored textVersion (text composition changed).
+ *   In either case vectors are re-computed and overwritten automatically.
+ *
+ * ## Text composition (v2)
+ *
+ *   profile      = lifestyle + " — " + vibe_words + " — " + work
+ *   preference   = preferred_character_traits + " — " + preferred_physical_traits
+ *                  + " — " + dream_first_date
+ *   dealBreakers = deal_breakers
  */
 
 import { ObjectId } from "mongodb";
@@ -27,6 +34,9 @@ import { getEmbeddingsCollection } from "../db/collections.js";
 import { getEmbeddingProvider } from "../matching/embeddings/provider.js";
 import type { EmbeddingDoc } from "../models/embedding.model.js";
 
+/** Bump this whenever the set of fields fed into any embedding text changes. */
+const CURRENT_TEXT_VERSION = 2;
+
 // ─── Text field extraction ────────────────────────────────────────────────────
 
 function str(answers: Record<string, unknown>, key: string): string {
@@ -34,18 +44,23 @@ function str(answers: Record<string, unknown>, key: string): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
-function buildTexts(answers: Record<string, unknown>): {
+export function buildTexts(answers: Record<string, unknown>): {
   profile: string;
   preference: string;
   dealBreakers: string;
 } {
   return {
-    profile: [str(answers, "lifestyle"), str(answers, "vibe_words")]
+    profile: [
+      str(answers, "lifestyle"),
+      str(answers, "vibe_words"),
+      str(answers, "work"),
+    ]
       .filter(Boolean)
       .join(" — "),
     preference: [
       str(answers, "preferred_character_traits"),
       str(answers, "preferred_physical_traits"),
+      str(answers, "dream_first_date"),
     ]
       .filter(Boolean)
       .join(" — "),
@@ -71,6 +86,7 @@ async function saveEmbedding(
         applicantId,
         provider,
         model,
+        textVersion: CURRENT_TEXT_VERSION,
         profile: vectors.profile,
         preference: vectors.preference,
         dealBreakers: vectors.dealBreakers,
@@ -110,10 +126,10 @@ export async function embedApplicant(
 
 /**
  * Loads stored embeddings for the given applicants.
- * Computes and saves any that are missing or stale (different model).
+ * Computes and saves any that are missing or stale (different model or text version).
  * Returns a map of applicantId hex → EmbeddingDoc.
  *
- * Used by the embedding-cosine algorithm's prepare() step.
+ * Used by the scorer's prepare() step.
  */
 export async function getOrComputeEmbeddings(
   applicants: { _id: ObjectId; answers: Record<string, unknown> }[]
@@ -124,7 +140,6 @@ export async function getOrComputeEmbeddings(
   const db = await getDb();
   const col = getEmbeddingsCollection(db);
 
-  // Load whatever is already stored
   const ids = applicants.map((a) => a._id);
   const stored = await col.find({ applicantId: { $in: ids } }).toArray();
 
@@ -132,57 +147,88 @@ export async function getOrComputeEmbeddings(
     stored.map((d) => [d.applicantId.toHexString(), d])
   );
 
-  // Identify applicants that need (re-)embedding
   const stale = applicants.filter((a) => {
     const existing = storedByApplicant.get(a._id.toHexString());
-    return !existing || existing.model !== provider.model;
+    return (
+      !existing ||
+      existing.model !== provider.model ||
+      (existing.textVersion ?? 1) !== CURRENT_TEXT_VERSION
+    );
   });
 
   if (stale.length > 0) {
     console.log(
       `[embedding] Computing ${stale.length} missing/stale embeddings ` +
-      `(model: ${provider.model})...`
+      `(model: ${provider.model}, textVersion: ${CURRENT_TEXT_VERSION})...`
     );
 
-    const profileTexts    = stale.map((a) => buildTexts(a.answers).profile);
-    const preferenceTexts = stale.map((a) => buildTexts(a.answers).preference);
-    const dealBreakerTexts = stale.map((a) => buildTexts(a.answers).dealBreakers);
+    // Never let one bad applicant's text (a provider rate limit, content-
+    // policy rejection, or timeout) abort matching for every applicant in
+    // this batch — including the majority whose embeddings were already
+    // cached and didn't need this call at all. On failure, the stale
+    // applicants simply stay absent from the returned map (and stay marked
+    // stale in the DB), so the next matching run retries them automatically
+    // once the provider recovers.
+    try {
+      const staleTexts = stale.map((a) => buildTexts(a.answers));
+      const profileTexts     = staleTexts.map((t) => t.profile);
+      const preferenceTexts  = staleTexts.map((t) => t.preference);
+      const dealBreakerTexts = staleTexts.map((t) => t.dealBreakers);
 
-    const [profileEmbs, preferenceEmbs, dealBreakerEmbs] = await Promise.all([
-      provider.embedBatch(profileTexts),
-      provider.embedBatch(preferenceTexts),
-      provider.embedBatch(dealBreakerTexts),
-    ]);
+      const [profileEmbs, preferenceEmbs, dealBreakerEmbs] = await Promise.all([
+        provider.embedBatch(profileTexts),
+        provider.embedBatch(preferenceTexts),
+        provider.embedBatch(dealBreakerTexts),
+      ]);
 
-    // Persist and update local map
-    await Promise.all(
-      stale.map(async (applicant, i) => {
-        const vectors = {
-          profile:      profileEmbs[i],
-          preference:   preferenceEmbs[i],
-          dealBreakers: dealBreakerEmbs[i],
-        };
+      const saved = await Promise.all(
+        stale.map(async (applicant, i) => {
+          const vectors = {
+            profile:      profileEmbs[i],
+            preference:   preferenceEmbs[i],
+            dealBreakers: dealBreakerEmbs[i],
+          };
 
-        await saveEmbedding(
-          applicant._id,
-          provider.name,
-          provider.model,
-          vectors
-        );
+          try {
+            await saveEmbedding(applicant._id, provider.name, provider.model, vectors);
+          } catch (err) {
+            console.error(
+              `[embedding] Failed to persist embedding for applicant ${applicant._id.toHexString()} — ` +
+              `skipping it this round:`,
+              err
+            );
+            return null;
+          }
 
-        const doc: EmbeddingDoc = {
-          _id: new ObjectId(),
-          applicantId: applicant._id,
-          provider: provider.name,
-          model: provider.model,
-          ...vectors,
-          createdAt: new Date(),
-        };
-        storedByApplicant.set(applicant._id.toHexString(), doc);
-      })
-    );
+          const doc: EmbeddingDoc = {
+            _id: new ObjectId(),
+            applicantId: applicant._id,
+            provider: provider.name,
+            model: provider.model,
+            textVersion: CURRENT_TEXT_VERSION,
+            ...vectors,
+            createdAt: new Date(),
+          };
+          return doc;
+        })
+      );
 
-    console.log(`[embedding] Done. ${stale.length} embeddings saved.`);
+      for (const doc of saved) {
+        if (doc) storedByApplicant.set(doc.applicantId.toHexString(), doc);
+      }
+
+      const failedCount = saved.filter((doc) => doc === null).length;
+      console.log(
+        `[embedding] Done. ${stale.length - failedCount}/${stale.length} embeddings saved` +
+        (failedCount > 0 ? ` (${failedCount} failed, will retry next run).` : ".")
+      );
+    } catch (err) {
+      console.error(
+        `[embedding] Failed to compute ${stale.length} missing/stale embeddings — ` +
+        `degrading to skip them this round (they remain stale and will be retried next run):`,
+        err
+      );
+    }
   }
 
   return storedByApplicant;

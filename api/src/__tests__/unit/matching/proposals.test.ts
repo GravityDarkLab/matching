@@ -1,10 +1,13 @@
 // tested: generateCoupleProposals — pair canonicalisation, symmetric score
-// averaging, deduplication, alias propagation, missing-applicant skip, sorting
+// averaging, deduplication, alias propagation, missing-applicant skip, sorting —
+// and proposalPairAction, the pair-revival policy used by saveMatchProposals
+// (expired pairs are re-proposed next phase, declined/failed/success pairs
+// stay permanently excluded).
 import { describe, it, expect } from "bun:test";
 import { ObjectId } from "mongodb";
 // Import from proposals.js directly: route tests mock.module() the engine
 // facade globally, which would otherwise replace this function in full-suite runs.
-import { generateCoupleProposals } from "../../../matching/proposals.js";
+import { generateCoupleProposals, proposalPairAction } from "../../../matching/proposals.js";
 import type { RankedCandidate } from "../../../matching/engine.js";
 import type { ApplicantDoc } from "../../../models/applicant.model.js";
 
@@ -29,6 +32,8 @@ function candidate(of: ApplicantDoc, score: number, breakdown: Record<string, nu
     applicantId: of._id.toHexString(),
     score,
     breakdown,
+    embeddingScore: score,
+    llmReasoning: "",
   };
 }
 
@@ -155,4 +160,28 @@ describe("generateCoupleProposals", () => {
     expect(proposals[0].score).toBeGreaterThan(proposals[1].score);
     expect(proposals[0].score).toBeCloseTo(0.9);
   });
+});
+
+describe("proposalPairAction", () => {
+  it("inserts when the pair has no prior match", () => {
+    expect(proposalPairAction(undefined)).toBe("insert");
+  });
+
+  it("revives expired pairs so they get another chance next phase", () => {
+    expect(proposalPairAction("expired")).toBe("revive");
+  });
+
+  it.each(["declined", "failed", "success"] as const)(
+    "permanently excludes %s pairs from re-proposal",
+    (status) => {
+      expect(proposalPairAction(status)).toBe("skip");
+    }
+  );
+
+  it.each(["proposed", "in_progress", "dating"] as const)(
+    "leaves live %s matches alone",
+    (status) => {
+      expect(proposalPairAction(status)).toBe("skip");
+    }
+  );
 });

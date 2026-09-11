@@ -152,11 +152,12 @@ export async function saveMatchProposals(
         { _id: existing._id, status: "expired" },
         {
           $set: {
-            score:     p.score,
-            breakdown: p.breakdown,
+            score:        p.score,
+            breakdown:    p.breakdown,
+            llmReasoning: p.llmReasoning,
             algorithm,
-            status:    "proposed",
-            updatedAt: now,
+            status:       "proposed",
+            updatedAt:    now,
           },
           $unset: {
             initiatorId:        "",
@@ -180,6 +181,7 @@ export async function saveMatchProposals(
         applicantBAlias: p.applicantBAlias,
         score:           p.score,
         breakdown:       p.breakdown,
+        llmReasoning:    p.llmReasoning,
         algorithm,
         status:          "proposed",
         createdAt:       now,

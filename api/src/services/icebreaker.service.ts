@@ -1,5 +1,5 @@
 import type { ApplicantDoc } from "../models/applicant.model.js";
-import { generateChatCompletion } from "./ai.service.js";
+import { generateChatCompletion, truncateForPrompt, UNTRUSTED_PROFILE_NOTICE } from "./ai.service.js";
 
 const FALLBACK_QUESTIONS = [
   "What's your favourite way to spend a weekend?",
@@ -22,11 +22,12 @@ export interface IceBreakerResult {
 
 function profileSnippet(doc: ApplicantDoc): string {
   const a = doc.answers as Record<string, unknown>;
+  const t = (v: unknown) => truncateForPrompt(String(v));
   const parts: string[] = [];
-  if (a.vibe_words)       parts.push(`Vibes: ${a.vibe_words}`);
-  if (a.lifestyle)        parts.push(`Lifestyle: ${a.lifestyle}`);
-  if (a.dream_first_date) parts.push(`Dream first date: ${a.dream_first_date}`);
-  if (a.location)         parts.push(`Location: ${a.location}`);
+  if (a.vibe_words)       parts.push(`Vibes: ${t(a.vibe_words)}`);
+  if (a.lifestyle)        parts.push(`Lifestyle: ${t(a.lifestyle)}`);
+  if (a.dream_first_date) parts.push(`Dream first date: ${t(a.dream_first_date)}`);
+  if (a.location)         parts.push(`Location: ${t(a.location)}`);
   return parts.join(". ") || "No profile details available.";
 }
 
@@ -34,27 +35,42 @@ export async function generateIceBreakers(
   a: ApplicantDoc,
   b: ApplicantDoc
 ): Promise<IceBreakerResult> {
-  const prompt = `You are a thoughtful matchmaker. Two people have been matched based on compatibility.
+  const prompt = `You are a thoughtful matchmaker. Two people have been matched based on compatibility. ${UNTRUSTED_PROFILE_NOTICE}
 
-Person A: ${profileSnippet(a)}
-Person B: ${profileSnippet(b)}
+Person A: <profile>${profileSnippet(a)}</profile>
+Person B: <profile>${profileSnippet(b)}</profile>
 
-Generate exactly 5 creative, personal ice-breaking questions that Person A can ask Person B via Instagram to start a meaningful conversation. Then generate exactly 3 specific date ideas that would suit both of them.
+Generate exactly 5 creative, personal ice-breaking questions (each under 15 words) that Person A can ask Person B via Instagram to start a meaningful conversation. Then generate exactly 3 specific date ideas (each under 12 words) that would suit both of them.
 
 Respond in this exact JSON format (no markdown, no extra text):
 {"questions":["q1","q2","q3","q4","q5"],"dateIdeas":["d1","d2","d3"]}`;
 
-  const raw = await generateChatCompletion(prompt);
+  const raw = await generateChatCompletion(prompt, {
+    maxTokens: 1500, // headroom for reasoning-model chain-of-thought before the short final answer
+    reasoningEffort: "low", // minimize chain-of-thought spend on models that support it
+    responseSchema: {
+      name: "ice_breakers",
+      schema: {
+        type: "object",
+        properties: {
+          questions: { type: "array", items: { type: "string" } },
+          dateIdeas: { type: "array", items: { type: "string" } },
+        },
+        required: ["questions", "dateIdeas"],
+        additionalProperties: false,
+      },
+    },
+  });
 
   if (raw) {
     try {
-      const parsed = JSON.parse(raw) as { questions?: string[]; dateIdeas?: string[] };
-      const questions = Array.isArray(parsed.questions) && parsed.questions.length >= 3
-        ? parsed.questions.slice(0, 5)
-        : FALLBACK_QUESTIONS;
-      const dateIdeas = Array.isArray(parsed.dateIdeas) && parsed.dateIdeas.length >= 1
-        ? parsed.dateIdeas.slice(0, 3)
-        : FALLBACK_DATE_IDEAS;
+      const parsed = JSON.parse(raw) as { questions?: unknown; dateIdeas?: unknown };
+      const cleanStrings = (arr: unknown): string[] =>
+        Array.isArray(arr) ? arr.filter((v): v is string => typeof v === "string" && v.trim().length > 0) : [];
+      const cleanQuestions = cleanStrings(parsed.questions);
+      const cleanDateIdeas = cleanStrings(parsed.dateIdeas);
+      const questions = cleanQuestions.length >= 3 ? cleanQuestions.slice(0, 5) : FALLBACK_QUESTIONS;
+      const dateIdeas = cleanDateIdeas.length >= 1 ? cleanDateIdeas.slice(0, 3) : FALLBACK_DATE_IDEAS;
       return { questions, dateIdeas };
     } catch {
       // fall through to defaults

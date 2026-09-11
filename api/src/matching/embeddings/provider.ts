@@ -1,45 +1,20 @@
 /**
- * Embedding Provider Abstraction
+ * Embedding Provider
  * ================================
  *
- * Defines the EmbeddingProvider interface and a factory that instantiates
- * the right backend based on env configuration.
+ * Matching always embeds via the OpenAI embeddings API
+ * (text-embedding-3-small / text-embedding-3-large). Requires OPENAI_API_KEY.
  *
- * ## Supported providers
- *
- *   openai  — OpenAI embeddings API (text-embedding-3-small / text-embedding-3-large)
- *             Requires: OPENAI_API_KEY
- *             Default model: text-embedding-3-small (1536 dims, fast & cheap)
- *
- *   local   — Any OpenAI-compatible local server:
- *               • LM Studio  → http://localhost:1234/v1
- *               • Ollama     → http://localhost:11434/v1
- *               • llama.cpp  → http://localhost:8080/v1
- *             Requires: EMBEDDING_BASE_URL
- *             No API key needed (uses "local" as placeholder).
- *             Recommended models: nomic-embed-text, mxbai-embed-large, all-minilm
- *
- * ## What about Claude / Anthropic?
- *
- * Anthropic does not offer a public embeddings API.
- * If you want a self-hosted model with Claude-like quality, use the `local`
- * provider with an instruction-tuned embedding model via LM Studio or Ollama.
- *
- * For AI-based matching that uses Claude's reasoning (rather than embeddings),
- * see the `claude-judge` algorithm (future implementation) which sends both
- * profiles to Claude and parses a structured compatibility score.
- *
- * ## Configuration (.env)
- *
- *   EMBEDDING_PROVIDER=openai              # openai | local
- *   EMBEDDING_MODEL=text-embedding-3-small # model name
- *   OPENAI_API_KEY=sk-...                  # openai only
- *   EMBEDDING_BASE_URL=http://localhost:1234/v1  # local only
+ * There is deliberately no local/self-hosted option here — matching is the
+ * one place in this codebase where output quality and consistency matter
+ * more than avoiding API cost, so it always calls OpenAI directly. A future
+ * non-matching feature that wants a local model gets its own client; it
+ * would not reuse this one.
  *
  * ## Batch embedding
  *
- * The `embedBatch()` method sends all texts in a single API request.
- * The `embedding-cosine` algorithm uses this in its `prepare()` step to embed
+ * `embedBatch()` sends all texts in a single API request. The
+ * `embedding-cosine` algorithm uses this in its `prepare()` step to embed
  * all applicants' text fields in O(applicants) API calls instead of O(pairs).
  * For 50 applicants with 3 text fields each, that's 3 requests (one batch each)
  * instead of 50×49×3 = 7350 individual calls.
@@ -59,32 +34,20 @@ export interface EmbeddingProvider {
   /**
    * Embed multiple texts in one API call.
    * Returns vectors in the same order as the input.
-   * Falls back to sequential embed() calls if the provider doesn't support batching.
    */
   embedBatch(texts: string[]): Promise<number[][]>;
 }
 
-// ─── OpenAI-compatible provider ───────────────────────────────────────────────
-//
-// Works for OpenAI directly AND for any local server that speaks the
-// OpenAI embeddings REST format (LM Studio, Ollama, llama.cpp, etc.).
+// ─── OpenAI provider ───────────────────────────────────────────────────────────
 
-class OpenAICompatibleProvider implements EmbeddingProvider {
-  readonly name: string;
+class OpenAIEmbeddingProvider implements EmbeddingProvider {
+  readonly name = "openai";
   readonly model: string;
 
-  private readonly baseUrl: string;
   private readonly apiKey: string;
 
-  constructor(opts: {
-    name: string;
-    model: string;
-    baseUrl: string;
-    apiKey: string;
-  }) {
-    this.name = opts.name;
+  constructor(opts: { model: string; apiKey: string }) {
     this.model = opts.model;
-    this.baseUrl = opts.baseUrl.replace(/\/$/, "");
     this.apiKey = opts.apiKey;
   }
 
@@ -96,20 +59,23 @@ class OpenAICompatibleProvider implements EmbeddingProvider {
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
 
-    const response = await fetch(`${this.baseUrl}/embeddings`, {
+    const response = await fetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify({ input: texts, model: this.model }),
+      body:   JSON.stringify({ input: texts, model: this.model }),
+      // Unguarded otherwise: a hung request here blocks the entire matching
+      // pass (this runs in prepare(), before any per-applicant rerank call,
+      // and has no timeout/fallback of its own) — see ai.service.ts's
+      // generateChatCompletion for the same class of fix on the chat side.
+      signal: AbortSignal.timeout(30000),
     });
 
     if (!response.ok) {
       const body = await response.text().catch(() => "(no body)");
-      throw new Error(
-        `[embedding:${this.name}] API error ${response.status}: ${body}`
-      );
+      throw new Error(`[embedding] OpenAI API error ${response.status}: ${body}`);
     }
 
     const json = (await response.json()) as {
@@ -127,52 +93,18 @@ class OpenAICompatibleProvider implements EmbeddingProvider {
 
 let _instance: EmbeddingProvider | null = null;
 
-/**
- * Returns the configured embedding provider (singleton).
- * Throws with a clear message if required env vars are missing.
- */
+/** Returns the OpenAI embedding provider (singleton). */
 export function getEmbeddingProvider(): EmbeddingProvider {
-  if (_instance) return _instance;
-
-  const provider = env.embeddingProvider;
-
-  if (provider === "openai") {
-    if (!env.openaiApiKey) {
-      throw new Error(
-        "[embedding] EMBEDDING_PROVIDER=openai requires OPENAI_API_KEY to be set."
-      );
-    }
-    _instance = new OpenAICompatibleProvider({
-      name: "openai",
+  if (!_instance) {
+    _instance = new OpenAIEmbeddingProvider({
       model: env.embeddingModel,
-      baseUrl: "https://api.openai.com/v1",
       apiKey: env.openaiApiKey,
     });
-    return _instance;
   }
-
-  if (provider === "local") {
-    if (!env.embeddingBaseUrl) {
-      throw new Error(
-        "[embedding] EMBEDDING_PROVIDER=local requires EMBEDDING_BASE_URL " +
-        "(e.g. http://localhost:1234/v1 for LM Studio, http://localhost:11434/v1 for Ollama)."
-      );
-    }
-    _instance = new OpenAICompatibleProvider({
-      name: "local",
-      model: env.embeddingModel,
-      baseUrl: env.embeddingBaseUrl,
-      apiKey: "local-key", // placeholder — local servers ignore the key
-    });
-    return _instance;
-  }
-
-  throw new Error(
-    `[embedding] Unknown EMBEDDING_PROVIDER "${provider}". Valid values: openai, local.`
-  );
+  return _instance;
 }
 
-/** Reset the singleton — useful in tests when switching providers between runs. */
+/** Reset the singleton — useful in tests when switching the mocked model between runs. */
 export function resetEmbeddingProvider(): void {
   _instance = null;
 }

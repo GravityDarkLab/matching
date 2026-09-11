@@ -5,11 +5,13 @@ info:
   description: |
     Privacy-oriented couple matching backend for the Ons (أنس) platform.
 
-    **Privacy model:** Instagram handles are never stored in the applicant profile.
-    They are AES-256-GCM encrypted in a separate `identities` collection and
-    resolvable only by authorized admin roles (every access is audit-logged).
-    Applicants are identified throughout the system by a human-friendly alias
-    such as "Blue Falcon" or "Silent River".
+    **Privacy model:** Instagram handles and first/last names are never stored in
+    the applicant profile. They are AES-256-GCM encrypted in a separate
+    `identities` collection (each field with its own fresh IV) and resolvable
+    only by authorized admin roles, or mutually between two applicants once a
+    match reaches `dating` — every access is audit-logged. Applicants are
+    identified throughout the system by a human-friendly alias such as
+    "Blue Falcon" or "Silent River".
 
     **Authentication:**
     - Admin endpoints are protected by a session cookie (`admin_token`) set by
@@ -22,12 +24,12 @@ info:
       Admin JWTs are rejected on applicant endpoints and vice-versa.
 
     **Rate limits:**
-    - Public form submission: 100 requests per 10 minutes per IP
+    - Public form submission: 3 requests per hour per IP
     - Admin login: 10 requests per minute per IP
     - Admin endpoints: 200 requests per minute per IP
     - Profile login: 10 requests per minute per IP
     - Profile endpoints: 100 requests per minute per IP
-  version: 1.0.0
+  version: 1.2.0
   contact:
     name: Admin
 
@@ -54,6 +56,8 @@ tags:
     description: Manage questionnaire versions (session required)
   - name: Admin – Audit
     description: View audit logs (session required)
+  - name: Admin – Matches
+    description: View and manage match records (session required)
   - name: Matching
     description: Matching engine endpoints
 
@@ -162,6 +166,8 @@ components:
     FormAnswers:
       type: object
       required:
+        - first_name
+        - last_name
         - instagram_handle
         - location
         - birth_date
@@ -182,6 +188,20 @@ components:
         - dream_first_date
         - disclaimer_agreed
       properties:
+        first_name:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: "^[\\p{L}\\p{M}'\\- ]+$"
+          example: "Jane"
+          description: "Sensitive — stored encrypted alongside the Instagram handle, never appears in matching profile."
+        last_name:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: "^[\\p{L}\\p{M}'\\- ]+$"
+          example: "Doe"
+          description: "Sensitive — stored encrypted alongside the Instagram handle, never appears in matching profile."
         instagram_handle:
           type: string
           pattern: '^@?[\w.]+$'
@@ -229,6 +249,23 @@ components:
         open_to_long_distance:
           type: boolean
           example: true
+        max_age_gap:
+          type: integer
+          minimum: 0
+          maximum: 40
+          nullable: true
+          example: 8
+          description: "Maximum age gap (in years) the applicant is comfortable with. `null` means no preference — the age filter is disabled for this applicant."
+        open_to_older:
+          type: boolean
+          nullable: true
+          example: false
+          description: "Open to a partner older than themselves. Only relevant when `max_age_gap > 0`; stored as `null` otherwise."
+        open_to_younger:
+          type: boolean
+          nullable: true
+          example: true
+          description: "Open to a partner younger than themselves. Only relevant when `max_age_gap > 0`; stored as `null` otherwise."
         preferred_physical_traits:
           type: string
           example: "Athletic, tall"
@@ -322,7 +359,7 @@ components:
           properties:
             version:
               type: string
-              example: "1.0.0"
+              example: "1.2.0"
             name:
               type: string
               example: "Matching Form v1"
@@ -484,7 +521,7 @@ components:
 
     ApplicantProfileView:
       type: object
-      required: [applicantId, alias, status, scoreThreshold, createdAt, deletionScheduledAt]
+      required: [applicantId, alias, fullName, status, scoreThreshold, createdAt, deletionScheduledAt, distanceNudge]
       properties:
         applicantId:
           type: string
@@ -492,6 +529,15 @@ components:
         alias:
           type: string
           example: "Blue Falcon"
+        fullName:
+          type: string
+          nullable: true
+          example: "Jane Doe"
+          description: |
+            The applicant's own decrypted first + last name. Unlike a partner
+            reveal, this is not audit-logged — viewing your own data isn't a
+            privacy-sensitive event. `null` for identities created before this
+            field existed.
         status:
           $ref: '#/components/schemas/ApplicantStatus'
         scoreThreshold:
@@ -514,6 +560,20 @@ components:
             and its data will be permanently deleted. `null` when no deletion
             is scheduled. Use `POST /api/v1/profile/cancel-deletion` to clear it,
             or `POST /api/v1/profile/delete-now` to delete immediately.
+        distanceNudge:
+          type: object
+          nullable: true
+          required: [matchId]
+          properties:
+            matchId:
+              type: string
+              example: "64f1a2b3c4d5e6f7a8b9c0d5"
+          description: |
+            Present once when the applicant's most recent `failed` match was
+            tagged `too_far` in its outcome feedback and they aren't already
+            open to long-distance matches. `null` once acknowledged (see
+            `POST /api/v1/profile/matches/{id}/nudge-ack`) or when no
+            qualifying match exists.
 
     MatchStatus:
       type: string
@@ -592,29 +652,86 @@ components:
         partnerInstagram:
           type: string
           description: |
-            Partner's Instagram handle. Only present once contact is committed
-            (`status` is `in_progress` or `dating`) — never while merely proposed.
-            Each decryption is audit-logged.
-          example: "horizon.swift"
+            Partner's Instagram handle. Only present once the match reaches `dating`
+            status — i.e. after the target **accepts** the contact request. Never
+            present in `proposed` or `in_progress` state. Each decryption is
+            audit-logged as `APPLICANT_REVEAL_IDENTITY`.
+          example: "@horizon.swift"
+        partnerFullName:
+          type: string
+          description: |
+            Partner's first + last name. Same reveal gate and audit-logging as
+            `partnerInstagram` — only present once `dating`, and only if the
+            partner's identity record has a name on file (pre-existing records
+            created before name capture was added have none).
+          example: "Alex Rivera"
+        datingStartedAt:
+          type: string
+          format: date-time
+          description: |
+            When the match became `dating` — the anchor for the day-3/day-7
+            outcome gating (see `POST /profile/matches/{id}/outcome`). Only
+            present once `status = dating`. Falls back to the moment the
+            target responded for matches that reached `dating` before this
+            field existed.
+          example: "2026-06-15T18:00:00.000Z"
 
     ContactResult:
       type: object
-      required: [targetInstagram, iceBreakers, dateIdeas]
+      required: [iceBreakers, dateIdeas]
+      description: |
+        Returned by `POST /profile/matches/:id/contact`. No identity is revealed
+        at this stage — Instagram handles are only decrypted mutually when the
+        target accepts (`POST /profile/matches/:id/respond` with `accept: true`).
       properties:
-        targetInstagram:
-          type: string
-          example: "@example_partner"
-          description: "Decrypted Instagram handle of the match partner. Triggers an `APPLICANT_REVEAL_IDENTITY` audit log entry."
         iceBreakers:
           type: array
           items:
             type: string
           example: ["What's the most spontaneous trip you've taken?", "What does your ideal Sunday look like?"]
+          description: "AI-generated conversation starters tailored to both profiles."
         dateIdeas:
           type: array
           items:
             type: string
           example: ["Coffee walk through the old city", "Sunset picnic with homemade snacks"]
+          description: "AI-generated first-date suggestions based on both profiles."
+
+    MatchSummary:
+      type: object
+      required: [pros, cons, generatedAt, model]
+      description: |
+        AI-generated compatibility summary for a match pair. Generated once per match
+        by the LLM, then cached on the match document. Subsequent fetches are instant
+        (no LLM call). Cache is invalidated when `OPENAI_CHAT_MODEL` changes. A summary
+        produced by the fallback text (LLM call failed or returned unparsable output) is
+        never cached as a real result — the next request retries the LLM.
+      properties:
+        pros:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 3
+          description: "2–3 one-sentence compatibility strengths."
+          example: ["Both value long-term commitment and share similar relationship goals.", "Your lifestyle habits align closely — non-smoking, socially active."]
+        cons:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 2
+          description: "1–2 constructive notes on where they differ."
+          example: ["You differ on religious importance — worth an early conversation."]
+        generatedAt:
+          type: string
+          format: date-time
+          description: "When the summary was first generated."
+          example: "2026-06-18T10:30:00.000Z"
+        model:
+          type: string
+          description: "Model identifier used to generate the summary (e.g. gpt-4o-mini). Used for cache invalidation."
+          example: "gpt-4o-mini"
 
     # ── Auth ──────────────────────────────────────────────────────────────────
     AdminLoginRequest:
@@ -686,10 +803,10 @@ components:
           example: "Blue Falcon"
         questionnaireVersion:
           type: string
-          example: "1.0.0"
+          example: "1.2.0"
         answers:
           type: object
-          description: "All non-sensitive answers. instagram_handle is never present."
+          description: "All non-sensitive answers. instagram_handle, first_name, and last_name are never present — they live encrypted in the identities collection."
           additionalProperties: true
           example:
             location: "Paris, France"
@@ -699,6 +816,10 @@ components:
             relationship_type: "Long Term"
         status:
           $ref: '#/components/schemas/ApplicantStatus'
+        submissionIp:
+          type: string
+          description: "IP address recorded at form submission time. Useful for spotting duplicate account creation from the same address. Admin-only field."
+          example: "203.0.113.42"
         createdAt:
           type: string
           format: date-time
@@ -753,7 +874,7 @@ components:
           enum: [true]
         data:
           type: object
-          required: [alias, instagramHandle, applicantId]
+          required: [alias, instagramHandle, applicantId, fullName]
           properties:
             alias:
               type: string
@@ -762,6 +883,11 @@ components:
               type: string
               example: "@example_user"
               description: "Decrypted Instagram handle. This response is audit-logged."
+            fullName:
+              type: string
+              nullable: true
+              example: "Jane Doe"
+              description: "Decrypted first + last name, same audit-logged reveal as instagramHandle. `null` for identities created before this field existed."
             applicantId:
               type: string
               example: "64f1a2b3c4d5e6f7a8b9c0d1"
@@ -862,20 +988,18 @@ components:
     MatchScoreBreakdown:
       type: object
       description: |
-        Per-dimension scores, each in [0, 1]. Fields vary by algorithm:
+        Per-dimension scores from the embedding-cosine scorer, each in [0, 1].
 
-        **baseline** fields:
-        `relationship_type`, `deal_breakers`, `religion_compatibility`,
-        `affection_importance`, `long_distance`, `lifestyle`
-
-        **cosine** fields:
-        `numeric_compatibility`, `lifestyle_similarity`,
-        `character_cross_match`, `character_a_wants_b`, `character_b_wants_a`,
-        `deal_breaker_penalty`
-
-        **embedding-cosine** fields: same keys as `cosine` — values are
-        semantically richer because text fields are embedded rather than
-        bag-of-words matched.
+        Fields:
+        - `numeric_compatibility` — structured preference alignment (rel type, long distance, affection, religion openness)
+        - `lifestyle_similarity` — semantic cosine similarity of lifestyle + vibe + work embeddings
+        - `character_cross_match` — bidirectional: avg of (A wants B) and (B wants A) character match
+        - `character_a_wants_b` — how well B's profile matches A's stated character preferences
+        - `character_b_wants_a` — how well A's profile matches B's stated character preferences
+        - `deal_breaker_penalty` — 1 minus deal-breaker overlap (higher = fewer deal-breakers triggered)
+        - `age_modifier` — soft age-gap multiplier in [0, 1]; 1.0 means no penalty; values below 1.0
+          indicate the gap falls between one and two times `max_age_gap`. The final composite score
+          equals the weighted sum multiplied by `min(A_age_modifier, B_age_modifier)`.
       additionalProperties:
         type: number
         format: float
@@ -888,6 +1012,7 @@ components:
         character_a_wants_b: 0.88
         character_b_wants_a: 0.82
         deal_breaker_penalty: 0.94
+        age_modifier: 0.95
 
     RankedCandidate:
       type: object
@@ -929,31 +1054,19 @@ components:
       properties:
         algorithm:
           type: string
-          enum: [baseline, cosine, embedding-cosine]
+          enum: [embedding-cosine]
           default: embedding-cosine
           description: |
-            **⚠️ Multilingual note:** The platform supports EN / DE / FR / AR.
-            Applicants may submit free-text fields (vibe, lifestyle, traits) in any language.
-            Only `embedding-cosine` handles cross-language semantic matching correctly.
-            `baseline` and `cosine` use keyword overlap — they will produce degraded results
-            when comparing applicants who filled the form in different languages.
-            Use a multilingual embedding model (e.g. `text-embedding-3-small` via OpenAI,
-            or `paraphrase-multilingual-mpnet-base-v2` via Ollama/LM Studio).
+            The only supported algorithm is `embedding-cosine`.
 
-            **embedding-cosine** *(default, recommended)* — Replaces keyword matching with
-            dense vector embeddings. "driven" ≈ "ambitious" ≈ "ehrgeizig" ≈ "طموح" because
-            they map to nearby vectors in embedding space. Requires `EMBEDDING_PROVIDER`
-            to be configured (openai or local via LM Studio/Ollama).
-            Uses a `prepare()` step to batch-embed all applicants before scoring — O(N) API calls.
+            Dense text embeddings are used for semantic matching: "driven" ≈ "ambitious" ≈
+            "ehrgeizig" ≈ "طموح" because they map to nearby vectors in embedding space.
+            Supports EN / DE / FR / AR and any other language supported by the configured
+            embedding model.
 
-            **baseline** — Weighted rule-based scoring across 6 hand-crafted dimensions
-            (relationship type, deal breakers, religion, affection, long distance, lifestyle).
-            Fast, zero external dependencies. ⚠️ Free-text fields are not compared — no
-            multilingual degradation but also no semantic depth.
-
-            **cosine** — Cosine similarity on encoded feature vectors. ⚠️ Uses keyword
-            overlap for text fields ("driven" ≠ "ambitieux") — poor results for
-            multilingual applicant pools.
+            Requires `OPENAI_API_KEY` — matching always embeds via the OpenAI API.
+            A `prepare()` step batch-embeds all applicants before pairwise scoring — O(N) API
+            calls, not O(N²). Embeddings are persisted to the DB; subsequent runs reuse them.
 
     MatchingRunResponse:
       type: object
@@ -964,7 +1077,7 @@ components:
           enum: [true]
         algorithm:
           type: string
-          enum: [baseline, cosine, embedding-cosine]
+          enum: [embedding-cosine]
           example: "embedding-cosine"
         totalApplicants:
           type: integer
@@ -1117,7 +1230,7 @@ paths:
         first, copy the `submissionKey` from the response, then click **Authorize**
         and paste it under **SubmissionKey**.
 
-        **Rate limit:** 100 requests per 10 minutes per IP.
+        **Rate limit:** 3 requests per hour per IP.
       parameters:
         - in: header
           name: X-Submission-Key
@@ -1134,8 +1247,10 @@ paths:
             schema:
               $ref: '#/components/schemas/FormSubmissionRequest'
             example:
-              questionnaireVersion: "1.0.0"
+              questionnaireVersion: "1.2.0"
               answers:
+                first_name: "Jane"
+                last_name: "Doe"
                 instagram_handle: "@example_user"
                 location: "Paris, France"
                 birth_date: "1997-06-15"
@@ -1454,13 +1569,13 @@ paths:
   /api/v1/admin/applicants/{id}/identity:
     get:
       tags: [Admin – Applicants]
-      summary: Resolve applicant identity (decrypt Instagram handle)
+      summary: Resolve applicant identity (decrypt Instagram handle + name)
       operationId: resolveIdentity
       security:
         - CookieAuth: []
         - BearerAuth: []
       description: |
-        Decrypts and returns the real Instagram handle for an applicant.
+        Decrypts and returns the real Instagram handle and full name for an applicant.
 
         🔒 **Requires `super_admin` role.** Regular `admin` and `viewer` roles receive 403.
 
@@ -1486,6 +1601,7 @@ paths:
                 data:
                   alias: "Blue Falcon"
                   instagramHandle: "@example_user"
+                  fullName: "Jane Doe"
                   applicantId: "64f1a2b3c4d5e6f7a8b9c0d1"
         '401':
           $ref: '#/components/responses/Unauthorized'
@@ -1669,6 +1785,166 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  # ── Admin – Matches ───────────────────────────────────────────────────────────
+  /api/v1/admin/matches:
+    get:
+      tags: [Admin – Matches]
+      summary: List match records (admin only)
+      operationId: listMatches
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      description: |
+        Returns a paginated list of all match records. Supports filtering by
+        status, participant ID, and free-text search over aliases.
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: status
+          in: query
+          description: "Filter by match status."
+          schema:
+            type: string
+            enum: [proposed, in_progress, dating, success, failed, declined, expired]
+        - name: participantId
+          in: query
+          description: "Filter to matches involving this applicant ObjectId."
+          schema: { type: string }
+        - name: search
+          in: query
+          description: "Free-text search over participant aliases."
+          schema: { type: string }
+      responses:
+        '200':
+          description: Paginated match list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        applicantAId: { type: string }
+                        applicantBId: { type: string }
+                        applicantAAlias: { type: string }
+                        applicantBAlias: { type: string }
+                        score: { type: number, format: float }
+                        breakdown: { $ref: '#/components/schemas/MatchScoreBreakdown' }
+                        algorithm: { type: string }
+                        status: { type: string }
+                        notes: { type: string }
+                        createdAt: { type: string, format: date-time }
+                        updatedAt: { type: string, format: date-time }
+                  total: { type: integer }
+                  page: { type: integer }
+                  limit: { type: integer }
+                  totalPages: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/admin/matches/{id}:
+    patch:
+      tags: [Admin – Matches]
+      summary: Update a match record (admin only)
+      operationId: patchMatch
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      description: |
+        Allows an admin to override `status` or add/update `notes` on any match.
+        Use with care — status changes bypass the normal applicant-driven transition
+        rules and are not audit-logged in `audit_logs`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: Match MongoDB ObjectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [proposed, in_progress, dating, success, failed, declined, expired]
+                  description: "Override the match status."
+                notes:
+                  type: string
+                  maxLength: 1000
+                  description: "Admin notes (free text, max 1000 chars)."
+            example:
+              status: "dating"
+              notes: "Manually promoted after admin review."
+      responses:
+        '200':
+          description: Updated match record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { type: object }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Match not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: Validation error (invalid status value or notes too long)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationErrorResponse' }
+    delete:
+      tags: [Admin – Matches]
+      summary: Delete a match record (admin only)
+      operationId: removeMatch
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      description: |
+        Permanently removes a match record from the database. Does **not**
+        recalculate the applicants' statuses — use the matching engine to
+        re-run the pass after deletion if needed.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: Match MongoDB ObjectId
+      responses:
+        '200':
+          description: Match deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [true] }
+              example:
+                success: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Match not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
   # ── Matching ──────────────────────────────────────────────────────────────────
   /api/v1/matching/candidates/{applicantId}:
     get:
@@ -1676,8 +1952,8 @@ paths:
       summary: Get top match candidates for an applicant
       operationId: getCandidates
       description: |
-        Returns the top N candidates scored against the given applicant using
-        the selected algorithm. Returns aliases and scores only — no PII.
+        Returns the top N candidates scored against the given applicant using the
+        embedding-cosine algorithm. Returns aliases and scores only — no PII.
       parameters:
         - name: applicantId
           in: path
@@ -1693,16 +1969,6 @@ paths:
             minimum: 1
             maximum: 50
             default: 10
-        - name: algorithm
-          in: query
-          schema:
-            type: string
-            enum: [baseline, cosine, embedding-cosine]
-            default: embedding-cosine
-            description: >
-              Defaults to `embedding-cosine` (recommended for multilingual applicant pools).
-              `baseline` and `cosine` use keyword overlap on free-text fields and may produce
-              poor results when applicants filled the form in different languages (EN/DE/FR/AR).
       responses:
         '200':
           description: Ranked candidate list
@@ -1724,8 +1990,9 @@ paths:
                       character_a_wants_b: 0.88
                       character_b_wants_a: 0.82
                       deal_breaker_penalty: 0.94
+                      age_modifier: 1.0
         '400':
-          description: Invalid applicant ID or unknown algorithm
+          description: Invalid applicant ID
           content:
             application/json:
               schema:
@@ -1802,28 +2069,23 @@ paths:
         `applicantId → top 10 ranked candidates`. Computationally
         O(n²) — intended for offline/scheduled use, not real-time.
 
-        For `embedding-cosine`, embeddings are loaded from the DB (written at
-        form submission time). Only missing or stale embeddings trigger API
-        calls — in steady state this is O(1) extra work.
+        **Four hard pre-filters run before any scoring** (pairs that fail are never scored):
+        1. **Orientation** — incompatible sexual orientations are excluded.
+        2. **Age** — `open_to_older=false`/`open_to_younger=false` vetoes, plus outer gap limit.
+        3. **Religion** — if either person has `religion_deal_breaker=true` and religions differ → excluded.
+        4. **Long distance** — if either person has `open_to_long_distance=false` and locations differ → excluded.
+
+        Embeddings are loaded from the DB (written at form submission time).
+        Only missing or stale embeddings trigger API calls — in steady state
+        this is O(1) extra work. Stale = wrong model or outdated `textVersion`.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/MatchingRunRequest'
-            examples:
-              baseline:
-                summary: "Fast rule-based scoring"
-                value:
-                  algorithm: "baseline"
-              cosine:
-                summary: "Cosine similarity (bag-of-words)"
-                value:
-                  algorithm: "cosine"
-              embedding-cosine:
-                summary: "Embedding-based cosine (semantic)"
-                value:
-                  algorithm: "embedding-cosine"
+            example:
+              algorithm: "embedding-cosine"
       responses:
         '200':
           description: Full matching results
@@ -1835,19 +2097,20 @@ paths:
                 success: true
                 algorithm: "embedding-cosine"
                 totalApplicants: 42
-                durationMs: 310
+                durationMs: 8450
                 results:
                   "64f1a2b3c4d5e6f7a8b9c0d1":
                     - alias: "Silent River"
                       applicantId: "64f1a2b3c4d5e6f7a8b9c0d3"
                       score: 0.83
                       breakdown:
-                        relationship_type: 1.0
-                        deal_breakers: 0.9
-                        religion_compatibility: 0.5
-                        affection_importance: 0.78
-                        long_distance: 1.0
-                        lifestyle: 0.6
+                        numeric_compatibility: 0.91
+                        lifestyle_similarity: 0.78
+                        character_cross_match: 0.85
+                        character_a_wants_b: 0.88
+                        character_b_wants_a: 0.82
+                        deal_breaker_penalty: 0.94
+                        age_modifier: 1.0
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2195,22 +2458,22 @@ paths:
   /api/v1/profile/matches/{id}/contact:
     post:
       tags: [Profile]
-      summary: Request contact — reveal partner's Instagram
+      summary: Initiate contact — get ice-breakers and date ideas
       operationId: requestContact
       security:
         - ApplicantCookieAuth: []
         - ApplicantBearerAuth: []
       description: |
         Initiates the contact flow for a `proposed` match:
-        1. Decrypts the partner's Instagram handle (audit-logged as `APPLICANT_REVEAL_IDENTITY`)
-        2. Generates AI ice-breakers and date ideas tailored to both profiles
-        3. Transitions match → `in_progress`; sets the authenticated applicant as `initiatorId`
-        4. Expires all other `proposed`/`in_progress` matches of the initiator —
+        1. Generates AI ice-breakers and date ideas tailored to both profiles
+        2. Transitions match → `in_progress`; sets the authenticated applicant as `initiatorId`
+        3. Expires all other `proposed`/`in_progress` matches of the initiator —
            contact is exclusive; expired matches become eligible again in the
            next matching phase
 
-        The partner's Instagram is returned **only** to the initiator in this response —
-        it is never exposed to the target or in any other endpoint.
+        **No identity is revealed at this stage.** Instagram handles are only decrypted
+        mutually when the target accepts the contact request (`POST /respond` with
+        `accept: true`). Both reveals happen atomically and are each audit-logged.
 
         Returns 403 if the applicant is not part of this match, or if the match is not `proposed`.
       parameters:
@@ -2223,7 +2486,7 @@ paths:
           example: "64f1a2b3c4d5e6f7a8b9c0d5"
       responses:
         '200':
-          description: Contact initiated — partner's Instagram + conversation starters returned
+          description: Contact initiated — AI ice-breakers and date ideas returned (no Instagram revealed)
           content:
             application/json:
               schema:
@@ -2238,7 +2501,6 @@ paths:
               example:
                 success: true
                 data:
-                  targetInstagram: "@example_partner"
                   iceBreakers:
                     - "What's the most spontaneous trip you've taken?"
                     - "What does your ideal Sunday look like?"
@@ -2272,13 +2534,22 @@ paths:
         Called by the **target** of a contact request (the non-initiator) to accept or decline.
 
         **Accept (`accept: true`):**
-        - Match → `dating`
+        - Match → `dating`, with `datingStartedAt` set to now — the anchor for
+          the day-3/day-7 outcome gating on `POST /profile/matches/{id}/outcome`
         - Both applicants → `dating`
         - All other `proposed`/`in_progress` matches for both applicants → `expired`
+        - **Mutual identity reveal:** both parties' Instagram handles (and full
+          names, if on record) are decrypted simultaneously and stored as
+          accessible for this match. Each reveal is audit-logged independently
+          as `APPLICANT_REVEAL_IDENTITY` with `reason: "mutual_accept"`. The
+          response immediately returns the initiator's handle/name to the
+          responding applicant (the target) so the UI can show it without
+          waiting for the next `GET /profile/matches` call; both parties will
+          also see `partnerInstagram`/`partnerFullName` on every subsequent call.
 
         **Decline (`accept: false`):**
         - Match → `declined`
-        - No applicant status changes
+        - No applicant status changes; identities remain sealed
 
         Returns 403 if called by the initiator (you cannot respond to your own request)
         or if the match is not in `in_progress` state.
@@ -2307,12 +2578,30 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data]
                 properties:
                   success:
                     type: boolean
                     enum: [true]
+                  data:
+                    type: object
+                    required: [partnerInstagram, partnerFullName]
+                    properties:
+                      partnerInstagram:
+                        type: string
+                        nullable: true
+                        description: "The initiator's Instagram handle, revealed to the responding applicant on accept. `null` on decline."
+                        example: "@horizon.swift"
+                      partnerFullName:
+                        type: string
+                        nullable: true
+                        description: "The initiator's full name, revealed alongside the handle. `null` on decline or if no name is on record."
+                        example: "Alex Rivera"
               example:
                 success: true
+                data:
+                  partnerInstagram: "@horizon.swift"
+                  partnerFullName: "Alex Rivera"
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2343,11 +2632,14 @@ paths:
         - ApplicantCookieAuth: []
         - ApplicantBearerAuth: []
       description: |
-        Called by the **initiator** of a contact request to back out after the
-        identity reveal. The match → `declined` (terminal) and the pair is
-        permanently excluded from future matching runs. The initiator's other
-        matches were already expired at contact time, so they wait for the next
-        matching phase to receive fresh matches.
+        Called by the **initiator** of a contact request to back out while the
+        match is `in_progress` (before the target responds). The match →
+        `declined` (terminal) and the pair is permanently excluded from future
+        matching runs. The initiator's other matches were already expired at
+        contact time, so they wait for the next matching phase for fresh matches.
+
+        Because identity reveal only happens on mutual acceptance, withdrawing
+        leaves both parties' Instagram handles sealed.
 
         Returns 403 if called by a non-participant or by the target;
         409 if the match is not in `in_progress` state.
@@ -2401,14 +2693,31 @@ paths:
         - ApplicantCookieAuth: []
         - ApplicantBearerAuth: []
       description: |
-        Either applicant in a `dating` or `in_progress` match can self-report the outcome.
+        Either applicant in a `dating` match can self-report the outcome. While the
+        match is still `in_progress`, the only legal report is the **initiator**
+        bailing out with `failed` before the partner responds — `success` requires an
+        actual dating phase (409), and the target declines via the respond endpoint
+        (403). Once `dating`, outcomes are time-gated: `failed` unlocks 3 days after
+        `datingStartedAt`, `success` unlocks after 7 days. Returns 403 if called
+        before the applicable threshold.
 
         **`success`:** match → `success`; both applicants → `inactive` (deletion in 180 days)
 
-        **`failed`:** match → `failed`; both applicants → `applied` (re-enters matching pool)
+        **`failed`:** match → `failed`. Applicant status depends on `continuation`:
+        - omitted or `"continue"` (default): both applicants → `applied` (re-enters matching pool)
+        - `"break"`: the **reporter** → `inactive` (deletion in 180 days, cancellable),
+          their partner → `applied` (re-enters the pool) — a break is the reporter's
+          choice about their own account only
 
-        Returns 403 if the applicant is not part of this match or the match is not in
-        an appropriate state (`dating` or `in_progress`).
+        Optional `outcomeFeedback` (only meaningful for `failed`) is stored on the
+        match document and audit-logged as `APPLICANT_REPORT_OUTCOME`. If `tags`
+        includes `"too_far"` and the reporting applicant isn't already open to
+        long-distance matches, a one-time suggestion later appears via
+        `ApplicantProfileView.distanceNudge` (see `POST /matches/{id}/nudge-ack`).
+
+        Returns 403 if the applicant is not part of this match, the match is not in
+        an appropriate state (`dating` or `in_progress`), or it's too early for the
+        requested outcome.
       parameters:
         - name: id
           in: path
@@ -2428,6 +2737,27 @@ paths:
                   type: string
                   enum: [success, failed]
                   example: "failed"
+                outcomeFeedback:
+                  type: object
+                  required: [tags]
+                  properties:
+                    tags:
+                      type: array
+                      maxItems: 4
+                      items:
+                        type: string
+                        enum: [too_far, different_values, no_spark, something_else]
+                      example: ["too_far", "no_spark"]
+                    note:
+                      type: string
+                      maxLength: 500
+                      example: "We tried, but the distance made it really hard."
+                  description: "Optional, only applied when `outcome = failed`."
+                continuation:
+                  type: string
+                  enum: [continue, break]
+                  description: "Only meaningful when `outcome = failed`. Defaults to `continue` if omitted."
+                  example: "continue"
       responses:
         '200':
           description: Outcome recorded
@@ -2444,23 +2774,161 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Not a participant, or match not in a reportable state
+          description: Not a participant, match not in a reportable state, or too early for this outcome
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Too early to report this outcome — available 3 days after you started dating"
         '404':
           description: Match not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Outcome was already reported for this match
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: Validation error (invalid outcome value)
+          description: Validation error (invalid outcome/tag/continuation value)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ValidationErrorResponse'
+
+  /api/v1/profile/matches/{id}/nudge-ack:
+    post:
+      tags: [Profile]
+      summary: Acknowledge the distance-preference nudge
+      operationId: acknowledgeDistanceNudge
+      security:
+        - ApplicantCookieAuth: []
+        - ApplicantBearerAuth: []
+      description: |
+        Dismisses the one-time distance-preference suggestion surfaced via
+        `ApplicantProfileView.distanceNudge` after a `failed` outcome tagged
+        `too_far`. If `openUp` is `true`, also flips the applicant's
+        `open_to_long_distance` answer to `true`. The nudge is acknowledged
+        either way so it doesn't reappear on the next dashboard load.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The `matchId` from `ApplicantProfileView.distanceNudge`.
+          example: "64f1a2b3c4d5e6f7a8b9c0d5"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [openUp]
+              properties:
+                openUp:
+                  type: boolean
+                  example: true
+      responses:
+        '200':
+          description: Nudge acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+              example:
+                success: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Match not found, not owned by this applicant, or never tagged `too_far`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation error (`openUp` field missing or not boolean)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
+
+  /api/v1/profile/matches/{id}/summary:
+    get:
+      tags: [Profile]
+      summary: Get AI compatibility summary for a match
+      operationId: getMatchSummary
+      security:
+        - ApplicantCookieAuth: []
+        - ApplicantBearerAuth: []
+      description: |
+        Returns an AI-generated compatibility summary (pros / cons) for the given match.
+
+        **Caching:** The first call generates the summary via the configured LLM and
+        persists it on the match document. All subsequent calls return the cached copy
+        instantly (zero LLM calls). The cache is invalidated automatically if
+        `OPENAI_CHAT_MODEL` is changed. A fallback summary (LLM call failed or returned
+        unparsable output) is never cached as if it were a real result — the next call
+        retries the LLM.
+
+        **Authorization:** Only participants of the match can request its summary.
+        Returns `403` otherwise.
+
+        The summary is generated in a professional, warm tone. It highlights 2–3
+        genuine compatibility strengths and 1–2 constructive notes on differences —
+        never harsh or discouraging.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Match ID (MongoDB ObjectId as hex string)
+          example: "64f1a2b3c4d5e6f7a8b9c0d5"
+      responses:
+        '200':
+          description: Summary returned (either freshly generated or from cache)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/MatchSummary'
+              example:
+                success: true
+                data:
+                  pros:
+                    - "Both value long-term commitment and share similar relationship goals."
+                    - "Your lifestyle habits align closely — non-smoking, socially active."
+                  cons:
+                    - "You differ on religious importance — worth an early conversation."
+                  generatedAt: "2026-06-18T10:30:00.000Z"
+                  model: "gpt-4o-mini"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: |
+            Match not found, or the authenticated applicant is not a participant.
+            Both cases return 404 intentionally (privacy-by-design: a 403 would
+            confirm the match exists, which leaks information to non-participants).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/profile/deactivate:
     post:
@@ -2652,8 +3120,8 @@ paths:
       summary: Get a suggested passphrase
       operationId: suggestPassword
       description: |
-        Returns a randomly generated 4-word passphrase from a curated word pool.
-        No authentication required.
+        Returns a randomly generated 6-word passphrase drawn from the EFF short
+        wordlist (~62 bits of entropy). No authentication required.
 
         Intended as a convenience option in set-password and change-password forms.
         The suggestion is never stored — call again for a fresh one.

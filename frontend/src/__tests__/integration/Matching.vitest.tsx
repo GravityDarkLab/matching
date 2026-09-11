@@ -15,7 +15,7 @@ const mockRunMatching = vi.mocked(client.runMatching)
 const mockFetchLastRun = vi.mocked(client.fetchMatchingLastRun)
 
 const RUN_RESULT = {
-  algorithm: 'baseline',
+  algorithm: 'embedding-cosine',
   totalApplicants: 130,
   durationMs: 93,
   couplesProposed: 480,
@@ -36,10 +36,6 @@ beforeEach(() => {
   mockFetchLastRun.mockResolvedValue(null)
 })
 
-function getAlgorithmRadio(name: RegExp) {
-  return screen.getByRole('radio', { name }) as HTMLInputElement
-}
-
 /** Click "Run Matching" then confirm via the inline confirm dialog */
 async function clickRunAndConfirm() {
   await userEvent.click(screen.getByRole('button', { name: /admin\.matching\.run/i }))
@@ -47,39 +43,25 @@ async function clickRunAndConfirm() {
 }
 
 describe('Matching page — algorithm selector', () => {
-  it('renders all three algorithm options', () => {
+  it('renders only the embedding algorithm option', () => {
     renderMatching()
-    expect(screen.getAllByRole('radio')).toHaveLength(3)
+    expect(screen.getAllByRole('radio')).toHaveLength(1)
   })
 
   it('selects Embedding by default', () => {
     renderMatching()
-    expect(getAlgorithmRadio(/admin\.matching\.embedding/i)).toBeChecked()
+    const radio = screen.getByRole('radio', { name: /admin\.matching\.embedding/i }) as HTMLInputElement
+    expect(radio).toBeChecked()
   })
 
-  it('shows multilingual warning when non-embedding algorithm is selected', async () => {
-    renderMatching()
-    await userEvent.click(getAlgorithmRadio(/admin\.matching\.baseline/i))
-    // Trans renders the i18nKey as text when the component is a stub
-    expect(screen.getByText(/admin\.matching\.multilingualWarning/i)).toBeInTheDocument()
-  })
-
-  it('hides multilingual warning when embedding is selected', () => {
+  it('never shows the multilingual warning (only embedding is available)', () => {
     renderMatching()
     expect(screen.queryByText(/admin\.matching\.multilingualWarning/i)).not.toBeInTheDocument()
   })
 })
 
 describe('Matching page — run button', () => {
-  it('calls runMatching with the selected algorithm', async () => {
-    mockRunMatching.mockResolvedValue(RUN_RESULT)
-    renderMatching()
-    await userEvent.click(getAlgorithmRadio(/admin\.matching\.baseline/i))
-    await clickRunAndConfirm()
-    expect(mockRunMatching).toHaveBeenCalledWith('baseline')
-  })
-
-  it('defaults to embedding-cosine when no algorithm is changed', async () => {
+  it('calls runMatching with embedding-cosine', async () => {
     mockRunMatching.mockResolvedValue(RUN_RESULT)
     renderMatching()
     await clickRunAndConfirm()
@@ -158,21 +140,8 @@ describe('Matching page — result summary card', () => {
     const link = screen.getByRole('link', { name: /admin\.matching\.viewMatches/i })
     expect(link).toHaveAttribute('href', '/admin/matches')
   })
-
-  it('clears previous result when algorithm changes', async () => {
-    mockRunMatching.mockResolvedValue(RUN_RESULT)
-    renderMatching()
-    await clickRunAndConfirm()
-    await waitFor(() => screen.getByText(/admin\.matching\.runComplete/i))
-
-    // Switch algorithm — result card should disappear
-    await userEvent.click(getAlgorithmRadio(/admin\.matching\.baseline/i))
-    expect(screen.queryByText(/admin\.matching\.runComplete/i)).not.toBeInTheDocument()
-  })
 })
 
-// tested: persisted last-run summary — fetched from the server on mount
-// instead of living only in component state
 describe('Matching page — last run info', () => {
   it('shows neverRun when the server has no recorded run', async () => {
     renderMatching()

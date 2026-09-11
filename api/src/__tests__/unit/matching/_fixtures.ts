@@ -12,7 +12,7 @@ export function makeApplicant(
   return {
     _id: new ObjectId(),
     alias: "Test Alias",
-    questionnaireVersion: "1.0.0",
+    questionnaireVersion: "1.1.0",
     answers,
     status: "applied",
     magicToken: "a".repeat(64),
@@ -27,7 +27,7 @@ export function makeApplicant(
 export function makeQuestionnaire(): QuestionnaireDoc {
   return {
     _id: new ObjectId(),
-    version: "1.0.0",
+    version: "1.1.0",
     isActive: true,
     questions: [],
     createdAt: new Date(),

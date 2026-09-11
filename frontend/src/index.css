@@ -137,6 +137,18 @@
   to   { opacity: 1; transform: none; }
 }
 
+@keyframes confetti-drift {
+  0%   { opacity: 0; transform: translateY(0) rotate(0deg); }
+  15%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-40px) rotate(180deg); }
+}
+
+@keyframes heart-pulse {
+  0%   { opacity: 0; transform: scale(0.85); }
+  40%  { opacity: 1; transform: scale(1.08); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
 @layer components {
   .font-display {
     font-family: 'Fraunces', Georgia, 'Times New Roman', serif;
@@ -145,6 +157,14 @@
   .home-rise {
     opacity: 0;
     animation: home-rise 0.7s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+  }
+
+  .animate-confetti-drift {
+    animation: confetti-drift 1.6s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+  }
+
+  .animate-heart-pulse {
+    animation: heart-pulse 1.2s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
   }
 
   .cta-gold {

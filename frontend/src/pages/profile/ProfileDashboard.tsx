@@ -5,6 +5,7 @@ import { getMyProfile, getMyMatches } from '../../api/profile.client'
 import MatchList from './MatchList'
 import { useTranslation } from 'react-i18next'
 import EditProfileForm from './EditProfileForm'
+import DistanceNudgeCard from './DistanceNudgeCard'
 import ProfileSettingsDrawer from './ProfileSettingsDrawer'
 import DeletionCountdown from './DeletionCountdown'
 import Badge from '../../components/ui/Badge'
@@ -132,7 +133,10 @@ export default function ProfileDashboard() {
       <header className="h-14 flex items-center justify-between px-6 bg-surface border-b border-border">
         <div className="flex items-center gap-3">
           <span className="font-semibold text-primary">Ons</span>
-          <span className="text-sm text-muted">{profile?.alias}</span>
+          <div className="flex flex-col leading-tight">
+            <span className="text-sm text-primary">{profile?.fullName ?? profile?.alias}</span>
+            {profile?.fullName && <span className="text-xs text-muted">{profile.alias}</span>}
+          </div>
           <StatusBadge status={profile?.status} />
         </div>
         <div className="flex items-center gap-1.5">
@@ -163,6 +167,15 @@ export default function ProfileDashboard() {
 
       {/* Status-aware content */}
       <main>
+        {profile?.distanceNudge && profile.status !== 'inactive' && (
+          <div className="max-w-2xl mx-auto px-6 pt-6">
+            <DistanceNudgeCard
+              matchId={profile.distanceNudge.matchId}
+              onDismissed={() => void load()}
+            />
+          </div>
+        )}
+
         {/* Matches | My profile tabs — inactive accounts keep the dormant screen */}
         {profile && profile.status !== 'inactive' && (
           <div className="max-w-2xl mx-auto px-6 pt-6">
@@ -180,7 +193,7 @@ export default function ProfileDashboard() {
           <div className="max-w-lg mx-auto px-6 py-12 text-center space-y-6">
             <div className="bg-surface border border-border rounded-2xl p-8 shadow-sm">
               <h2 className="text-xl font-semibold text-primary mb-2">
-                {t('portal.dashboard.hello', { alias: profile.alias })}
+                {t('portal.dashboard.hello', { alias: profile.fullName ?? profile.alias })}
               </h2>
               <p className="text-muted text-sm mb-6">
                 {t('portal.dashboard.findingMatches')}

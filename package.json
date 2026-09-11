@@ -20,6 +20,7 @@
     "dev:api:prod": "cd api && bun run dev:prod",
     "dev:frontend": "cd frontend && bun run dev",
     "seed": "bun run scripts/seed.ts",
+    "eval:rerank": "bun run scripts/eval-rerank.ts",
     "lockfiles": "sh scripts/gen-lockfiles.sh",
     "build": "bun run --filter '*' build",
     "typecheck": "bunx tsc --noEmit -p tsconfig.json && bun run --filter '*' typecheck",

@@ -1,6 +1,5 @@
 import type { FormPayload } from '../types/form'
-
-const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3001'
+import { API_BASE as BASE } from '../config/api'
 
 export interface QuestionnaireData {
   version: string
@@ -28,7 +27,7 @@ export async function submitForm(
       'Content-Type': 'application/json',
       'X-Submission-Key': submissionKey,
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, _verify: '' }),
   })
   if (!res.ok) {
     const err = await res.json()

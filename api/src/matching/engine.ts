@@ -5,10 +5,12 @@ import type { QuestionnaireDoc } from "../models/questionnaire.model.js";
 import { getDb } from "../db/connection.js";
 import { getApplicantsCollection, getMatchesCollection } from "../db/collections.js";
 import { getActiveQuestionnaire } from "../services/questionnaire.service.js";
-import { baselineAlgorithm } from "./algorithms/baseline.js";
-import { cosineAlgorithm } from "./algorithms/cosine.js";
-import { embeddingCosineAlgorithm } from "./algorithms/embedding-cosine.js";
-import { filterCandidates } from "./filters.js";
+import { isOrientationCompatible } from "./filters/orientation.filter.js";
+import { isAgeCompatible } from "./filters/age.filter.js";
+import { isReligionCompatible } from "./filters/religion.filter.js";
+import { isLongDistanceCompatible } from "./filters/location.filter.js";
+import { prepare, score, hasEmbedding } from "./scorer.js";
+import { rerankCandidates } from "../services/match-rerank.service.js";
 
 export interface MatchScore {
   score: number;
@@ -18,37 +20,15 @@ export interface MatchScore {
 export interface RankedCandidate {
   alias: string;
   applicantId: string;
+  /** The displayed score (0-1) — from the LLM rerank stage, or the embedding
+   *  score unchanged if reranking failed/was skipped. */
   score: number;
   breakdown: Record<string, number>;
+  /** The pre-rerank embedding-cosine score (0-1) — kept for debugging/transparency. */
+  embeddingScore: number;
+  /** Short grounded explanation from the LLM rerank stage; "" if unavailable. */
+  llmReasoning: string;
 }
-
-/**
- * Plugin interface that all matching algorithms must implement.
- *
- * Optional prepare() hook:
- * Called once by the engine before any pairwise scoring begins.
- * Use it for expensive one-time setup — e.g. batch-embedding all applicants
- * so that score() can run synchronously from a warm cache.
- * If prepare() is absent the engine skips it (baseline/cosine don't need it).
- */
-export interface Algorithm {
-  name: string;
-  prepare?: (
-    applicants: ApplicantDoc[],
-    questionnaire: QuestionnaireDoc
-  ) => Promise<void>;
-  score(
-    a: ApplicantDoc,
-    b: ApplicantDoc,
-    questionnaire: QuestionnaireDoc
-  ): MatchScore;
-}
-
-const ALGORITHM_REGISTRY: Record<string, Algorithm> = {
-  "baseline": baselineAlgorithm,
-  "cosine": cosineAlgorithm,
-  "embedding-cosine": embeddingCosineAlgorithm,
-};
 
 /**
  * Returns the hex IDs of every applicant currently in an `in_progress` match
@@ -71,19 +51,74 @@ export async function getActiveContactApplicantIds(): Promise<Set<string>> {
   return ids;
 }
 
+function applyFilters(target: ApplicantDoc, candidates: ApplicantDoc[]): ApplicantDoc[] {
+  return candidates.filter(
+    (c) =>
+      isOrientationCompatible(target, c) &&
+      isAgeCompatible(target, c) &&
+      isReligionCompatible(target, c) &&
+      isLongDistanceCompatible(target, c),
+  );
+}
+
+const SHORTLIST_SIZE = 15;
+
+interface EmbeddingRanked {
+  alias: string;
+  applicantId: string;
+  score: number;
+  breakdown: Record<string, number>;
+}
+
+/**
+ * Takes the embedding-ranked list (already sorted desc), shortlists it,
+ * reranks the shortlist with the LLM, and returns the final topN sorted by
+ * the (now LLM-derived) displayed score. Never throws — falls back to the
+ * embedding order/score if the rerank call itself errors.
+ */
+async function applyRerank(
+  target: ApplicantDoc,
+  embeddingRanked: EmbeddingRanked[],
+  docsById: Map<string, ApplicantDoc>,
+  topN: number,
+): Promise<RankedCandidate[]> {
+  const shortlist = embeddingRanked.slice(0, Math.max(topN, SHORTLIST_SIZE));
+  if (shortlist.length === 0) return [];
+
+  let results: { applicantId: string; score: number; reasoning: string }[];
+  try {
+    results = await rerankCandidates(
+      target,
+      shortlist.map((c) => ({ doc: docsById.get(c.applicantId)!, embeddingScore: c.score })),
+    );
+  } catch (err) {
+    console.error("[engine] Rerank failed, falling back to embedding order:", err);
+    results = [];
+  }
+  const byId = new Map(results.map((r) => [r.applicantId, r]));
+
+  const reranked: RankedCandidate[] = shortlist.map((c) => {
+    const r = byId.get(c.applicantId);
+    return {
+      alias:          c.alias,
+      applicantId:    c.applicantId,
+      breakdown:      c.breakdown,
+      embeddingScore: c.score,
+      score:          r ? r.score : c.score,
+      llmReasoning:   r ? r.reasoning : "",
+    };
+  });
+
+  return reranked.sort((a, b) => b.score - a.score).slice(0, topN);
+}
+
 /**
  * Returns the top N candidates scored against the given applicant.
  */
 export async function getCandidates(
   applicantId: string,
   topN = 10,
-  algorithmName = "embedding-cosine"
 ): Promise<RankedCandidate[]> {
-  const algorithm = ALGORITHM_REGISTRY[algorithmName];
-  if (!algorithm) {
-    throw new AppError(`Unknown algorithm: ${algorithmName}`, 400);
-  }
-
   const questionnaire = await getActiveQuestionnaire();
   if (!questionnaire) {
     throw new AppError("No active questionnaire found", 404);
@@ -104,54 +139,53 @@ export async function getCandidates(
     throw new AppError(`Active applicant not found: ${applicantId}`, 404);
   }
 
-  // Applicants mid-contact (in_progress) are not eligible for new suggestions
   const activeContactIds = await getActiveContactApplicantIds();
   if (activeContactIds.has(targetId.toHexString())) {
     return [];
   }
 
-  // Load all other active applicants
   const others = await col
     .find({ _id: { $ne: targetId }, status: { $in: ["applied", "matched"] } })
     .toArray();
 
-  const eligibleOthers = others.filter((o) => !activeContactIds.has(o._id.toHexString()));
+  const eligible = others.filter((o) => !activeContactIds.has(o._id.toHexString()));
+  const compatible = applyFilters(target, eligible);
 
-  // Hard filters — remove incompatible candidates before scoring
-  const compatible = filterCandidates(target, eligibleOthers);
-
-  // Allow the algorithm to pre-compute anything it needs (e.g. embeddings)
-  if (algorithm.prepare) {
-    await algorithm.prepare([target, ...compatible], questionnaire);
+  const context = await prepare([target, ...compatible], questionnaire);
+  if (!hasEmbedding(context, target)) {
+    // Target's own embedding failed to compute this round — nothing to score against.
+    return [];
   }
+  const scorable = compatible.filter((other) => hasEmbedding(context, other));
 
-  // Score pairwise
-  const scored: RankedCandidate[] = compatible.map((other) => {
-    const result = algorithm.score(target, other, questionnaire);
-    return {
-      alias: other.alias,
-      applicantId: other._id.toHexString(),
-      score: result.score,
-      breakdown: result.breakdown,
-    };
-  });
+  const embeddingRanked: EmbeddingRanked[] = scorable
+    .map((other) => {
+      const result = score(target, other, questionnaire, context);
+      return {
+        alias:       other.alias,
+        applicantId: other._id.toHexString(),
+        score:       result.score,
+        breakdown:   result.breakdown,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
 
-  // Sort descending by score, return top N
-  return scored.sort((a, b) => b.score - a.score).slice(0, topN);
+  const docsById = new Map(scorable.map((d) => [d._id.toHexString(), d]));
+  return applyRerank(target, embeddingRanked, docsById, topN);
 }
+
+// Caps concurrent in-flight rerank calls during a full pass. Without this,
+// N applicants means N simultaneous LLM requests; with it, worst case
+// (45s timeout each, from match-rerank.service.ts) is ceil(N / 5) × 45s
+// instead of N × 45s — and the cache means most passes see nowhere near
+// the worst case.
+const RERANK_CONCURRENCY = 5;
 
 /**
  * Runs a full pairwise matching pass over all active applicants.
- * Returns a map of applicantId -> ranked candidates.
+ * Returns a map of applicantId → ranked candidates.
  */
-export async function runFullMatchingPass(
-  algorithmName = "embedding-cosine"
-): Promise<Record<string, RankedCandidate[]>> {
-  const algorithm = ALGORITHM_REGISTRY[algorithmName];
-  if (!algorithm) {
-    throw new AppError(`Unknown algorithm: ${algorithmName}`, 400);
-  }
-
+export async function runFullMatchingPass(): Promise<Record<string, RankedCandidate[]>> {
   const questionnaire = await getActiveQuestionnaire();
   if (!questionnaire) {
     throw new AppError("No active questionnaire found", 404);
@@ -165,8 +199,6 @@ export async function runFullMatchingPass(
     return {};
   }
 
-  // Applicants mid-contact (in_progress) sit out this pass entirely — they're
-  // not offered as candidates and don't receive new proposals themselves.
   const activeContactIds = await getActiveContactApplicantIds();
   const eligible = applicants.filter((a) => !activeContactIds.has(a._id.toHexString()));
 
@@ -174,33 +206,56 @@ export async function runFullMatchingPass(
     return {};
   }
 
-  // Allow the algorithm to pre-compute anything it needs (e.g. embeddings)
-  if (algorithm.prepare) {
-    await algorithm.prepare(eligible, questionnaire);
-  }
+  const context = await prepare(eligible, questionnaire);
 
   const results: Record<string, RankedCandidate[]> = {};
 
-  for (const applicant of eligible) {
-    const scored: RankedCandidate[] = [];
-    const compatible = filterCandidates(applicant, eligible.filter((o) => !o._id.equals(applicant._id)));
+  for (let i = 0; i < eligible.length; i += RERANK_CONCURRENCY) {
+    const batch = eligible.slice(i, i + RERANK_CONCURRENCY);
+    await Promise.all(
+      batch.map(async (applicant) => {
+        // Never let one applicant's failure (missing embedding, an
+        // unexpected rerank error, anything else) abort its whole
+        // concurrency batch — degrade that applicant to no candidates
+        // this round instead.
+        try {
+          if (!hasEmbedding(context, applicant)) {
+            results[applicant._id.toHexString()] = [];
+            return;
+          }
 
-    for (const other of compatible) {
-      const result = algorithm.score(applicant, other, questionnaire);
-      scored.push({
-        alias: other.alias,
-        applicantId: other._id.toHexString(),
-        score: result.score,
-        breakdown: result.breakdown,
-      });
-    }
+          const others = eligible.filter((o) => !o._id.equals(applicant._id));
+          const compatible = applyFilters(applicant, others)
+            .filter((other) => hasEmbedding(context, other));
 
-    results[applicant._id.toHexString()] = scored
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 10);
+          const embeddingRanked: EmbeddingRanked[] = compatible
+            .map((other) => {
+              const result = score(applicant, other, questionnaire, context);
+              return {
+                alias:       other.alias,
+                applicantId: other._id.toHexString(),
+                score:       result.score,
+                breakdown:   result.breakdown,
+              };
+            })
+            .sort((a, b) => b.score - a.score);
+
+          const docsById = new Map(compatible.map((d) => [d._id.toHexString(), d]));
+          results[applicant._id.toHexString()] = await applyRerank(applicant, embeddingRanked, docsById, 10);
+        } catch (err) {
+          console.error(
+            `[engine] Scoring failed for applicant ${applicant._id.toHexString()}, ` +
+            `degrading to no candidates this round:`,
+            err
+          );
+          results[applicant._id.toHexString()] = [];
+        }
+      }),
+    );
   }
 
   return results;
 }
 
-export { ALGORITHM_REGISTRY };
+// Re-export types needed by other modules
+export type { ApplicantDoc, QuestionnaireDoc };

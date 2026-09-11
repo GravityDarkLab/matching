@@ -26,7 +26,7 @@ export const applicantFilterSchema = paginationSchema.extend({
 });
 
 export const matchingRunSchema = z.object({
-  algorithm: z.enum(["baseline", "cosine", "embedding-cosine"]).default("embedding-cosine"),
+  algorithm: z.literal("embedding-cosine").default("embedding-cosine"),
 });
 
 export type MatchingRunInput = z.infer<typeof matchingRunSchema>;

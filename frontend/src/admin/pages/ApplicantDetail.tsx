@@ -88,10 +88,15 @@ function StatusStepper({ status }: { status: ApplicantStatus }) {
 
 // ── Identity card ──────────────────────────────────────────────────────────────
 
+interface RevealedIdentity {
+  instagramHandle: string
+  fullName: string | null
+}
+
 interface IdentityCardProps {
   id: string
-  identity: string | null
-  setIdentity: (v: string) => void
+  identity: RevealedIdentity | null
+  setIdentity: (v: RevealedIdentity) => void
 }
 
 function IdentityCard({ id, identity, setIdentity }: IdentityCardProps) {
@@ -106,7 +111,7 @@ function IdentityCard({ id, identity, setIdentity }: IdentityCardProps) {
     setRevealLoading(true); setError('')
     try {
       const res = await fetchIdentity(id)
-      setIdentity(res.instagramHandle)
+      setIdentity(res)
     } catch (err) {
       setError(err instanceof Error ? err.message : t('admin.detail.auditNote'))
     } finally {
@@ -123,7 +128,8 @@ function IdentityCard({ id, identity, setIdentity }: IdentityCardProps) {
         </p>
         {identity ? (
           <div className="bg-warning-light border border-warning/30 rounded-xl p-4">
-            <p className="font-mono text-sm text-warning">{identity}</p>
+            {identity.fullName && <p className="text-sm font-medium text-primary">{identity.fullName}</p>}
+            <p className="font-mono text-sm text-warning">{identity.instagramHandle}</p>
             <p className="text-xs text-muted mt-1.5">{t('admin.detail.auditNote')}</p>
           </div>
         ) : (
@@ -327,7 +333,7 @@ export function ApplicantDetail() {
   const { success } = useToast()
 
   const [applicant, setApplicant]             = useState<Applicant | null>(null)
-  const [identity, setIdentity]               = useState<string | null>(null)
+  const [identity, setIdentity]               = useState<RevealedIdentity | null>(null)
   const [withdrawLoading, setWithdrawLoading] = useState(false)
   const [confirmWithdraw, setConfirmWithdraw] = useState(false)
   const [error, setError]                     = useState('')
@@ -411,6 +417,12 @@ export function ApplicantDetail() {
                 <dt className="text-muted">{t('admin.detail.version')}</dt>
                 <dd className="text-primary font-mono text-right">{applicant.questionnaireVersion}</dd>
               </div>
+              {applicant.submissionIp && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted">{t('admin.detail.submissionIp')}</dt>
+                  <dd className="text-primary font-mono text-right text-xs">{applicant.submissionIp}</dd>
+                </div>
+              )}
             </dl>
 
             {/* Divider */}

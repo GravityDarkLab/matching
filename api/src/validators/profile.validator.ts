@@ -47,11 +47,26 @@ export const respondSchema = z.object({
 
 export type RespondInput = z.infer<typeof respondSchema>;
 
+export const outcomeFeedbackTags = ["too_far", "different_values", "no_spark", "something_else"] as const;
+
 export const outcomeSchema = z.object({
   outcome: z.enum(["success", "failed"]),
+  outcomeFeedback: z
+    .object({
+      tags: z.array(z.enum(outcomeFeedbackTags)).max(outcomeFeedbackTags.length),
+      note: z.string().max(500).optional(),
+    })
+    .optional(),
+  continuation: z.enum(["continue", "break"]).optional(),
 });
 
 export type OutcomeInput = z.infer<typeof outcomeSchema>;
+
+export const nudgeAckSchema = z.object({
+  openUp: z.boolean(),
+});
+
+export type NudgeAckInput = z.infer<typeof nudgeAckSchema>;
 
 /**
  * Self-service answer updates — same field rules as the original submission,
@@ -68,6 +83,8 @@ export const updateAnswersSchema = z.object({
   answers: formSubmissionSchema.shape.answers
     .omit({
       instagram_handle: true,
+      first_name: true,
+      last_name: true,
       disclaimer_agreed: true,
       birth_date: true,
       gender_identity: true,

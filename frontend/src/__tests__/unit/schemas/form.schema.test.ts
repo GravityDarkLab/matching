@@ -5,23 +5,45 @@ const birthDateForAge = (age: number): string => `${new Date().getUTCFullYear() 
 
 describe('form schemas', () => {
   describe('step1 — identity', () => {
+    const base = { first_name: 'Jane', last_name: 'Doe', instagram_handle: 'jane.doe_99', location: 'Paris' }
+
     it('accepts a valid handle and location', () => {
-      expect(step1Schema.safeParse({ instagram_handle: 'jane.doe_99', location: 'Paris' }).success).toBe(true)
+      expect(step1Schema.safeParse(base).success).toBe(true)
     })
 
     it('rejects an empty handle', () => {
-      const r = step1Schema.safeParse({ instagram_handle: '', location: 'Paris' })
+      const r = step1Schema.safeParse({ ...base, instagram_handle: '' })
       expect(r.success).toBe(false)
     })
 
     it('rejects handles with spaces or special chars', () => {
-      const r = step1Schema.safeParse({ instagram_handle: 'jane doe!', location: 'Paris' })
+      const r = step1Schema.safeParse({ ...base, instagram_handle: 'jane doe!' })
       expect(r.success).toBe(false)
     })
 
     it('rejects an empty location', () => {
-      const r = step1Schema.safeParse({ instagram_handle: 'jane', location: '' })
+      const r = step1Schema.safeParse({ ...base, location: '' })
       expect(r.success).toBe(false)
+    })
+
+    it('rejects an empty first name', () => {
+      const r = step1Schema.safeParse({ ...base, first_name: '' })
+      expect(r.success).toBe(false)
+    })
+
+    it('rejects an empty last name', () => {
+      const r = step1Schema.safeParse({ ...base, last_name: '' })
+      expect(r.success).toBe(false)
+    })
+
+    it('rejects a first name with digits or symbols', () => {
+      const r = step1Schema.safeParse({ ...base, first_name: 'Jane99!' })
+      expect(r.success).toBe(false)
+    })
+
+    it('accepts names with hyphens and apostrophes', () => {
+      const r = step1Schema.safeParse({ ...base, first_name: "Anne-Marie", last_name: "O'Brien" })
+      expect(r.success).toBe(true)
     })
   })
 
