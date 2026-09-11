@@ -9,7 +9,7 @@ import { isOrientationCompatible } from "./filters/orientation.filter.js";
 import { isAgeCompatible } from "./filters/age.filter.js";
 import { isReligionCompatible } from "./filters/religion.filter.js";
 import { isLongDistanceCompatible } from "./filters/location.filter.js";
-import { prepare, score, hasEmbedding } from "./scorer.js";
+import { prepare, score, hasEmbedding, type ScoreContext } from "./scorer.js";
 import { rerankCandidates } from "../services/match-rerank.service.js";
 
 export interface MatchScore {
@@ -68,6 +68,47 @@ interface EmbeddingRanked {
   applicantId: string;
   score: number;
   breakdown: Record<string, number>;
+}
+
+/**
+ * Scores `target` against each candidate and returns them sorted by score,
+ * descending. A candidate whose pair can't be scored (e.g. score() throws on
+ * a vector of the wrong length from a different embedding model) is skipped
+ * rather than failing the whole ranking — one bad vector must never empty a
+ * target's list or 500 the candidate-detail endpoint.
+ */
+function rankByEmbedding(
+  target: ApplicantDoc,
+  candidates: ApplicantDoc[],
+  questionnaire: QuestionnaireDoc,
+  context: ScoreContext,
+): EmbeddingRanked[] {
+  const ranked: EmbeddingRanked[] = [];
+  let skipped = 0;
+  let firstError: unknown;
+  for (const other of candidates) {
+    try {
+      const result = score(target, other, questionnaire, context);
+      ranked.push({
+        alias:       other.alias,
+        applicantId: other._id.toHexString(),
+        score:       result.score,
+        breakdown:   result.breakdown,
+      });
+    } catch (err) {
+      skipped++;
+      firstError ??= err;
+    }
+  }
+  if (skipped > 0) {
+    // One line per target, not per pair — a bad target vector fails every pair.
+    console.error(
+      `[engine] Skipped ${skipped}/${candidates.length} unscorable candidates for applicant ` +
+      `${target._id.toHexString()}:`,
+      firstError,
+    );
+  }
+  return ranked.sort((a, b) => b.score - a.score);
 }
 
 /**
@@ -158,17 +199,7 @@ export async function getCandidates(
   }
   const scorable = compatible.filter((other) => hasEmbedding(context, other));
 
-  const embeddingRanked: EmbeddingRanked[] = scorable
-    .map((other) => {
-      const result = score(target, other, questionnaire, context);
-      return {
-        alias:       other.alias,
-        applicantId: other._id.toHexString(),
-        score:       result.score,
-        breakdown:   result.breakdown,
-      };
-    })
-    .sort((a, b) => b.score - a.score);
+  const embeddingRanked = rankByEmbedding(target, scorable, questionnaire, context);
 
   const docsById = new Map(scorable.map((d) => [d._id.toHexString(), d]));
   return applyRerank(target, embeddingRanked, docsById, topN);
@@ -228,17 +259,7 @@ export async function runFullMatchingPass(): Promise<Record<string, RankedCandid
           const compatible = applyFilters(applicant, others)
             .filter((other) => hasEmbedding(context, other));
 
-          const embeddingRanked: EmbeddingRanked[] = compatible
-            .map((other) => {
-              const result = score(applicant, other, questionnaire, context);
-              return {
-                alias:       other.alias,
-                applicantId: other._id.toHexString(),
-                score:       result.score,
-                breakdown:   result.breakdown,
-              };
-            })
-            .sort((a, b) => b.score - a.score);
+          const embeddingRanked = rankByEmbedding(applicant, compatible, questionnaire, context);
 
           const docsById = new Map(compatible.map((d) => [d._id.toHexString(), d]));
           results[applicant._id.toHexString()] = await applyRerank(applicant, embeddingRanked, docsById, 10);

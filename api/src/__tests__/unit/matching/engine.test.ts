@@ -67,6 +67,9 @@ mock.module("../../../services/questionnaire.service.js", () => ({
 let embedded = new Set<string>();
 let pairScores: Record<string, number> = {};
 let throwsFor = new Set<string>();
+// Applicants whose stored vectors can't be compared (e.g. wrong length from a
+// different embedding model): cosine() throws for ANY pair involving them.
+let badVectors = new Set<string>();
 
 mock.module("../../../matching/scorer.js", () => ({
   prepare: mock(async (applicants: ApplicantDoc[]) => ({
@@ -76,6 +79,7 @@ mock.module("../../../matching/scorer.js", () => ({
     context.cache.has(a._id.toHexString()),
   score: (a: ApplicantDoc, b: ApplicantDoc) => {
     if (throwsFor.has(a.alias)) throw new Error(`scoring blew up for ${a.alias}`);
+    if (badVectors.has(a.alias) || badVectors.has(b.alias)) throw new Error("[cosine] Vector length mismatch");
     return { score: pairScores[`${a.alias}>${b.alias}`] ?? 0.5, breakdown: { lifestyle_similarity: 0.5 } };
   },
 }));
@@ -121,6 +125,7 @@ beforeEach(() => {
   embedded = new Set();
   pairScores = {};
   throwsFor = new Set();
+  badVectors = new Set();
   fakeMatchesCol.find.mockClear();
   mockRerank.mockReset();
   mockRerank.mockImplementation(agreeingRerank);
@@ -262,6 +267,17 @@ describe("getCandidates", () => {
     expect(aliases(await getCandidates(target._id.toHexString()))).toEqual(["Embedded"]);
   });
 
+  // Regression (review of #22): cosine() throws on mismatched vector lengths;
+  // one unscorable candidate used to 500 this endpoint for the whole target.
+  it("skips a single candidate whose pair can't be scored instead of failing the request", async () => {
+    const target = applicant("Target");
+    pool = [target, applicant("Good1"), applicant("Bad"), applicant("Good2")];
+    embedded = new Set(["Target", "Good1", "Bad", "Good2"]);
+    badVectors = new Set(["Bad"]);
+
+    expect(aliases(await getCandidates(target._id.toHexString())).sort()).toEqual(["Good1", "Good2"]);
+  });
+
   it("excludes pairs rejected by a hard filter before scoring", async () => {
     const target = { ...applicant("Target"), answers: { sexual_orientation: "Straight", gender_identity: "Male" } };
     const woman = { ...applicant("Woman"), answers: { gender_identity: "Female" } };
@@ -392,6 +408,23 @@ describe("runFullMatchingPass", () => {
 
     expect(results[broken._id.toHexString()]).toEqual([]);
     expect(aliases(results[a._id.toHexString()]).sort()).toEqual(["B", "Broken"]);
+  });
+
+  // Regression (review of #22): the per-applicant catch wrapped the whole
+  // ranking, so one unscorable candidate emptied every other target's list.
+  it("drops an unscorable candidate from other applicants' lists without emptying those lists", async () => {
+    const a = applicant("A");
+    const b = applicant("B");
+    const bad = applicant("Bad");
+    pool = [a, b, bad];
+    embedded = new Set(["A", "B", "Bad"]);
+    badVectors = new Set(["Bad"]);
+
+    const results = await runFullMatchingPass();
+
+    expect(aliases(results[a._id.toHexString()])).toEqual(["B"]);
+    expect(aliases(results[b._id.toHexString()])).toEqual(["A"]);
+    expect(results[bad._id.toHexString()]).toEqual([]);
   });
 
   it("isolates a failure across concurrency batches (more applicants than one batch)", async () => {
