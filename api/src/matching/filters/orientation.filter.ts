@@ -17,9 +17,13 @@ function str(answers: Record<string, unknown>, key: string): string {
  * Returns true if `a` and `b` are orientation-compatible.
  *
  * Rules:
- *   Straight  → only opposite binary gender (Male ↔ Female)
- *   Gay       → only Male partners
- *   Lesbian   → only Female partners
+ *   Straight            → only opposite binary gender (Male ↔ Female)
+ *   Gay / Lesbian       → only the same gender as oneself — the two labels
+ *                         are alternate vocabulary for the same same-gender
+ *                         attraction, not "Gay = Male" / "Lesbian = Female".
+ *                         A woman can describe her own orientation as "Gay",
+ *                         a man as "Lesbian"; the check does not require a
+ *                         specific gender_identity value on either side.
  *   Bisexual / Pansexual / Other / Prefer not to say → no gender filter
  *   Asexual   → no gender filter (romantic compatibility still possible)
  *
@@ -53,14 +57,12 @@ function _wantsGender(
       return true;
 
     case "Gay":
-      if (ownGender === "Male")   return partnerGender === "Male";
-      if (ownGender === "Female") return false;
-      return true;
-
     case "Lesbian":
-      if (ownGender === "Female") return partnerGender === "Female";
-      if (ownGender === "Male")   return false;
-      return true;
+      // Same-gender attraction — requires both a known own gender and a
+      // matching partner gender. An unset/unrecognized own gender has no
+      // basis to filter on, so it passes through rather than excluding.
+      if (ownGender === "") return true;
+      return partnerGender === ownGender;
 
     case "Bisexual":
     case "Pansexual":

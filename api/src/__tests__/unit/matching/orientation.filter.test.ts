@@ -99,11 +99,41 @@ describe("isOrientationCompatible — Gay", () => {
     ).toBe(false);
   });
 
-  it("Gay Female (unusual data) → excluded", () => {
+  // Regression: "Gay" is not exclusively a men's-only label — some women and
+  // non-binary people describe their own orientation as "gay" rather than
+  // "lesbian". The filter must not permanently exclude them from everyone.
+  it("Gay Female + Gay Female → compatible (Gay means same-gender attraction, not 'must be Male')", () => {
     expect(
       isOrientationCompatible(
         makeApplicant("Gay", "Female"),
         makeApplicant("Gay", "Female")
+      )
+    ).toBe(true);
+  });
+
+  it("Gay Female + Straight Male → incompatible (Gay Female wants Female)", () => {
+    expect(
+      isOrientationCompatible(
+        makeApplicant("Gay", "Female"),
+        makeApplicant("Straight", "Male")
+      )
+    ).toBe(false);
+  });
+
+  it("Gay Non-binary + Gay Non-binary → compatible (same-gender attraction applies to every gender, not just Male)", () => {
+    expect(
+      isOrientationCompatible(
+        makeApplicant("Gay", "Non-binary"),
+        makeApplicant("Gay", "Non-binary")
+      )
+    ).toBe(true);
+  });
+
+  it("Gay Non-binary + Straight Male → incompatible (previously fell through with no filter at all)", () => {
+    expect(
+      isOrientationCompatible(
+        makeApplicant("Gay", "Non-binary"),
+        makeApplicant("Straight", "Male")
       )
     ).toBe(false);
   });
@@ -128,13 +158,34 @@ describe("isOrientationCompatible — Lesbian", () => {
     ).toBe(false);
   });
 
-  it("Lesbian Male (unusual data) → excluded", () => {
+  // Regression: "Lesbian" is not exclusively a women's-only label — a man
+  // (or non-binary person) can describe their own orientation as "lesbian".
+  // The filter must not permanently exclude them from everyone.
+  it("Lesbian Male + Lesbian Male → compatible (Lesbian means same-gender attraction, not 'must be Female')", () => {
+    expect(
+      isOrientationCompatible(
+        makeApplicant("Lesbian", "Male"),
+        makeApplicant("Lesbian", "Male")
+      )
+    ).toBe(true);
+  });
+
+  it("Lesbian Male + Lesbian Female → incompatible (different genders, not because Male+Lesbian is categorically excluded)", () => {
     expect(
       isOrientationCompatible(
         makeApplicant("Lesbian", "Male"),
         makeApplicant("Lesbian", "Female")
       )
     ).toBe(false);
+  });
+
+  it("Lesbian Non-binary + Lesbian Non-binary → compatible (previously fell through with no filter at all)", () => {
+    expect(
+      isOrientationCompatible(
+        makeApplicant("Lesbian", "Non-binary"),
+        makeApplicant("Lesbian", "Non-binary")
+      )
+    ).toBe(true);
   });
 });
 
