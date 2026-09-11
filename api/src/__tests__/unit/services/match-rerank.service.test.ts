@@ -218,7 +218,7 @@ describe("rerankCandidates", () => {
       _id: new ObjectId(),
       applicantId: target._id,
       shortlistHash: hash,
-      model: "local:gpt-4o-mini", // matches RERANK_MODEL given setup.ts's EMBEDDING_PROVIDER=local and the OPENAI_CHAT_MODEL default
+      model: "gpt-4o-mini", // matches RERANK_MODEL given setup.ts default OPENAI_CHAT_MODEL
       rankings: [{ applicantId: id, score: 0.91, reasoning: "cached" }],
       createdAt: new Date(),
     };
@@ -236,7 +236,7 @@ describe("rerankCandidates", () => {
       _id: new ObjectId(),
       applicantId: target._id,
       shortlistHash: "stale-hash",
-      model: "local:gpt-4o-mini",
+      model: "gpt-4o-mini",
       rankings: [{ applicantId: id, score: 0.91, reasoning: "stale" }],
       createdAt: new Date(),
     };

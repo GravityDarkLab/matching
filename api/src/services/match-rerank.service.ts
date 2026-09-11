@@ -7,7 +7,7 @@ import { buildProfileSnippet } from "./profile-snippet.util.js";
 import { env } from "../config/env.js";
 import type { ApplicantDoc } from "../models/applicant.model.js";
 
-const RERANK_MODEL = `${env.chatProvider}:${env.openaiChatModel}`;
+const RERANK_MODEL = env.openaiChatModel;
 
 export interface RerankCandidateInput {
   doc: ApplicantDoc;
@@ -119,7 +119,6 @@ export async function rerankCandidates(
   );
 
   const raw = await generateChatCompletion(prompt, {
-    temperature: 0.3, // grounded judgment, not creative writing
     maxTokens: 4000, // headroom for a 15-candidate prompt on a reasoning model — see ChatCompletionOptions.maxTokens
     timeoutMs: 45000, // full reasoning across up to 15 candidates takes longer than a quick pairwise prompt
     reasoningEffort: "low", // minimize chain-of-thought token spend on models that support it (e.g. gpt-oss)
@@ -130,17 +129,6 @@ export async function rerankCandidates(
         properties: {
           rankings: {
             type: "array",
-            // minItems/maxItems force the array open until every candidate
-            // has an entry — without these, a schema-to-grammar translator
-            // (common on local OpenAI-compatible servers) treats a 1-item
-            // array as already valid JSON, and "close the array now" becomes
-            // a legal next token the model can take regardless of what the
-            // prompt asks for in plain text. Local-only: OpenAI's hosted
-            // strict mode doesn't document support for these keywords and
-            // may reject the request outright if sent there.
-            ...(env.chatProvider === "local"
-              ? { minItems: candidates.length, maxItems: candidates.length }
-              : {}),
             items: {
               type: "object",
               properties: {

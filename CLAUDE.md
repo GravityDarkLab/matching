@@ -44,7 +44,7 @@ API is at `http://localhost:3001`, Swagger UI at `http://localhost:3001/api/v1/d
 
 ## Environment setup
 
-Copy and fill in `api/.env.example` → `api/.env.dev`. Required secrets: `ENCRYPTION_KEY` (`openssl rand -hex 32`), `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `FORM_SECRET`, `EMBEDDING_PROVIDER` (`openai` or `local`).
+Copy and fill in `api/.env.example` → `api/.env.dev`. Required secrets: `ENCRYPTION_KEY` (`openssl rand -hex 32`), `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `FORM_SECRET`, `OPENAI_API_KEY`.
 
 For local MongoDB: `cp .env.mongo.dev.example .env.mongo.dev && docker compose --env-file .env.mongo.dev -f docker-compose-mongo-dev.yml up -d`
 
@@ -73,17 +73,17 @@ The API mounts at `/api/v1`. `form` routes are public; `admin` and `matching` ro
 
 ### Matching pipeline (`api/src/matching/`)
 
-Three-stage pipeline: **filter → prepare → score**. All algorithms implement the `Algorithm` interface (`prepare?`, `score`).
+Single pipeline, three stages: **filter → prepare → score**.
 
 - `engine.ts` — orchestrator; loads applicants, runs hard filters, calls `prepare()` once, then `score()` per pair
-- `filters.ts` — orientation compatibility (hard exclusion, not low score)
-- `algorithms/baseline.ts` — weighted rule-based (6 dimensions)
-- `algorithms/cosine.ts` — cosine similarity over encoded feature vectors (bag-of-words)
-- `algorithms/embedding-cosine.ts` — same structure but uses dense text embeddings; `prepare()` batch-embeds all applicants before pairwise scoring (O(N) API calls not O(N²))
-- `embeddings/provider.ts` — `EmbeddingProvider` interface; OpenAI or any OpenAI-compatible local model (LM Studio, Ollama)
-- `scorers/trait.scorer.ts` — shared trait overlap helpers used by baseline
+- `filters/` — four hard, binary pass/fail filters (excluded pairs never get a low score, they get no result): `orientation.filter.ts`, `age.filter.ts`, `religion.filter.ts`, `location.filter.ts`
+- `scorer.ts` — the only scorer: cosine similarity over dense text embeddings (numeric compatibility, lifestyle, bidirectional character cross-match, deal-breaker penalty, age modifier). `prepare()` batch-embeds all applicants before pairwise scoring (O(N) API calls, not O(N²))
+- `embeddings/provider.ts` — OpenAI embeddings only (`OPENAI_API_KEY`); no local-model option for matching
+- `scorers/numeric.scorer.ts` — the fixed-vector numeric-preference cosine helper used by `scorer.ts`
+- `scoring/weights.ts` — the per-dimension weights (sum to 1.0)
+- `proposals.ts` — derives unique couple proposals (canonicalized pair, symmetric score) from a full matching pass
 
-To add a new algorithm: implement `Algorithm` in `algorithms/`, register in `engine.ts`, add to the validator enum and `api/docs/openapi.yaml`.
+`services/match-rerank.service.ts` reranks each applicant's embedding-ranked shortlist with an LLM call (also OpenAI-only) before the top N are returned.
 
 ### Privacy model
 

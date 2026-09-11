@@ -239,7 +239,7 @@ function rerankCandidates(
 
 ---
 
-## Embedding providers (`embeddings/provider.ts`)
+## Embedding provider (`embeddings/provider.ts`)
 
 ```typescript
 interface EmbeddingProvider {
@@ -250,16 +250,9 @@ interface EmbeddingProvider {
 }
 ```
 
-| Provider | `EMBEDDING_PROVIDER` | Requirements |
-|---|---|---|
-| OpenAI | `openai` | `OPENAI_API_KEY` |
-| LM Studio | `local` | `EMBEDDING_BASE_URL=http://localhost:1234/v1` |
-| Ollama | `local` | `EMBEDDING_BASE_URL=http://localhost:11434/v1` |
-| llama.cpp | `local` | `EMBEDDING_BASE_URL=http://localhost:8080/v1` |
+Matching always embeds via the OpenAI API (`OPENAI_API_KEY`, `EMBEDDING_MODEL` — default `text-embedding-3-small`). There is deliberately no local/self-hosted option — matching is the one place in this codebase where output quality and consistency matter more than avoiding API cost. A future non-matching feature that wants a local model gets its own client rather than a branch of this one.
 
-Recommended local models: `nomic-embed-text`, `mxbai-embed-large`, `all-minilm`.
-
-> **Why not Claude / Anthropic?** Anthropic does not offer a public embeddings API. For local models, use LM Studio or Ollama with an instruction-tuned embedding model.
+> **Why not Claude / Anthropic?** Anthropic does not offer a public embeddings API.
 
 ---
 

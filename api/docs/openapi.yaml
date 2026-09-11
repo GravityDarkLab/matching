@@ -703,8 +703,9 @@ components:
       description: |
         AI-generated compatibility summary for a match pair. Generated once per match
         by the LLM, then cached on the match document. Subsequent fetches are instant
-        (no LLM call). Cache is invalidated when `EMBEDDING_PROVIDER` or
-        `OPENAI_CHAT_MODEL` changes (the cache key is `${EMBEDDING_PROVIDER}:${OPENAI_CHAT_MODEL}`).
+        (no LLM call). Cache is invalidated when `OPENAI_CHAT_MODEL` changes. A summary
+        produced by the fallback text (LLM call failed or returned unparsable output) is
+        never cached as a real result — the next request retries the LLM.
       properties:
         pros:
           type: array
@@ -1063,7 +1064,7 @@ components:
             Supports EN / DE / FR / AR and any other language supported by the configured
             embedding model.
 
-            Requires `EMBEDDING_PROVIDER` to be set (`openai` or `local` via LM Studio/Ollama).
+            Requires `OPENAI_API_KEY` — matching always embeds via the OpenAI API.
             A `prepare()` step batch-embeds all applicants before pairwise scoring — O(N) API
             calls, not O(N²). Embeddings are persisted to the DB; subsequent runs reuse them.
 
@@ -2875,7 +2876,9 @@ paths:
         **Caching:** The first call generates the summary via the configured LLM and
         persists it on the match document. All subsequent calls return the cached copy
         instantly (zero LLM calls). The cache is invalidated automatically if
-        `EMBEDDING_PROVIDER` or `OPENAI_CHAT_MODEL` is changed.
+        `OPENAI_CHAT_MODEL` is changed. A fallback summary (LLM call failed or returned
+        unparsable output) is never cached as if it were a real result — the next call
+        retries the LLM.
 
         **Authorization:** Only participants of the match can request its summary.
         Returns `403` otherwise.

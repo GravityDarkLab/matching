@@ -1,34 +1,6 @@
 import { env } from "../config/env.js";
 
-export type ChatProvider = "openai" | "local";
-
-/**
- * Pure — provider taken as a parameter rather than read from env, so the
- * endpoint-selection logic can be unit-tested directly for both providers
- * without mocking the env module (env.js is a shared module-level singleton
- * imported by dozens of files; mocking it in one test file would replace it
- * for every other test file in the same full-suite run).
- */
-export function buildChatEndpoint(
-  provider: ChatProvider,
-  openaiApiKey: string,
-  chatBaseUrl: string
-): { url: string; apiKey: string } {
-  if (provider === "openai") {
-    return {
-      url:    "https://api.openai.com/v1/chat/completions",
-      apiKey: openaiApiKey,
-    };
-  }
-  // local: chatBaseUrl falls back to embeddingBaseUrl when unset — see env.ts
-  const base = chatBaseUrl.replace(/\/$/, "");
-  return { url: `${base}/chat/completions`, apiKey: "local-key" };
-}
-
-function getChatEndpoint(): { url: string; apiKey: string } {
-  return buildChatEndpoint(env.chatProvider, env.openaiApiKey, env.chatBaseUrl);
-}
-
+const CHAT_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 const DEFAULT_CHAT_MODEL = env.openaiChatModel;
 
 /**
@@ -69,20 +41,8 @@ export interface JsonSchemaResponseFormat {
 
 export interface ChatCompletionOptions {
   /**
-   * Default 0.8 (creative). Pass lower (e.g. 0.4) for factual/grounded tasks.
-   * Ignored entirely when chatProvider is "openai" — OpenAI's o-series/
-   * gpt-5.x reasoning models reject any non-default value, see the omission
-   * below.
-   */
-  temperature?: number;
-  /**
-   * OpenAI-style Structured Outputs (response_format: json_schema) —
+   * OpenAI Structured Outputs (response_format: json_schema) —
    * https://developers.openai.com/api/docs/guides/structured-outputs.
-   * Sent regardless of provider: OpenAI and LM Studio both honor this exact
-   * shape (LM Studio: https://lmstudio.ai/docs/developer/openai-compat/structured-output).
-   * Ollama currently ignores the nested json_schema field and expects its own
-   * `format` param instead (https://github.com/ollama/ollama/issues/10001) —
-   * harmless no-op there, falls back to the free-text-JSON path below.
    */
   responseSchema?: JsonSchemaResponseFormat;
   /**
@@ -96,9 +56,8 @@ export interface ChatCompletionOptions {
   /**
    * Recognized by OpenAI's reasoning-model family (including gpt-oss) to cap
    * how much the model reasons before answering — "low" minimizes
-   * chain-of-thought token spend. Sent regardless of provider/model; ignored
-   * (harmless no-op) by anything that doesn't recognize the field, same as
-   * responseSchema above.
+   * chain-of-thought token spend. Ignored (harmless no-op) by models that
+   * don't recognize the field.
    */
   reasoningEffort?: "low" | "medium" | "high";
   /**
@@ -123,16 +82,14 @@ const OUTPUT_SAFETY_CEILING = 800;
 const DEFAULT_TIMEOUT_MS = 30000;
 
 /**
- * Pure — provider taken as a parameter, same testability reasoning as
- * buildChatEndpoint above. Encodes every provider-specific request-shape
- * fix discovered against real OpenAI/local responses:
- *   - temperature omitted for openai (o-series/gpt-5.x reject any non-
- *     default value outright)
- *   - max_completion_tokens for openai vs max_tokens for local (openai's
- *     newer models reject max_tokens outright)
+ * Pure — no env/network access — so the request-shape logic is unit-testable
+ * directly. Encodes OpenAI's reasoning-model request shape, discovered
+ * empirically against real API responses (HTTP 400s with explicit error
+ * messages), not guessed — see docs/llm-listwise-rerank-matching-score.md §5.7:
+ *   - temperature omitted entirely (o-series/gpt-5.x reject any non-default value)
+ *   - max_completion_tokens, not max_tokens (newer models reject max_tokens outright)
  */
 export function buildChatRequestBody(
-  provider: ChatProvider,
   model: string,
   prompt: string,
   options: ChatCompletionOptions
@@ -142,10 +99,7 @@ export function buildChatRequestBody(
   const body: Record<string, unknown> = {
     model,
     messages: [{ role: "user", content: prompt }],
-    ...(provider === "openai" ? {} : { temperature: options.temperature ?? 0.8 }),
-    ...(provider === "openai"
-      ? { max_completion_tokens: maxTokens }
-      : { max_tokens: maxTokens }),
+    max_completion_tokens: maxTokens,
   };
 
   if (options.responseSchema) {
@@ -174,15 +128,14 @@ export async function generateChatCompletion(
   prompt: string,
   options: ChatCompletionOptions = {}
 ): Promise<string> {
-  const { url, apiKey } = getChatEndpoint();
-  const body = buildChatRequestBody(env.chatProvider, DEFAULT_CHAT_MODEL, prompt, options);
+  const body = buildChatRequestBody(DEFAULT_CHAT_MODEL, prompt, options);
 
   try {
-    const res = await fetch(url, {
+    const res = await fetch(CHAT_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization:  `Bearer ${apiKey}`,
+        Authorization:  `Bearer ${env.openaiApiKey}`,
       },
       body:   JSON.stringify(body),
       signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),

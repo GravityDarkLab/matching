@@ -1,9 +1,7 @@
-import { describe, expect, it, afterEach } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
   parseAllowedOrigins,
   validateEncryptionKey,
-  validateEmbeddingProvider,
-  validateChatProvider,
   validatePositiveInt,
 } from "../../../config/env.js";
 
@@ -86,106 +84,6 @@ describe("validateEncryptionKey", () => {
 
   it("rejects an empty string", () => {
     expect(() => validateEncryptionKey("")).toThrow();
-  });
-});
-
-describe("validateEmbeddingProvider", () => {
-  const originalBaseUrl = process.env.EMBEDDING_BASE_URL;
-  const originalApiKey = process.env.OPENAI_API_KEY;
-
-  afterEach(() => {
-    if (originalBaseUrl === undefined) delete process.env.EMBEDDING_BASE_URL;
-    else process.env.EMBEDDING_BASE_URL = originalBaseUrl;
-    if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = originalApiKey;
-  });
-
-  it("accepts 'local' when EMBEDDING_BASE_URL is set", () => {
-    process.env.EMBEDDING_BASE_URL = "http://localhost:1234/v1";
-    expect(validateEmbeddingProvider("local")).toBe("local");
-  });
-
-  it("rejects 'local' when EMBEDDING_BASE_URL is missing", () => {
-    delete process.env.EMBEDDING_BASE_URL;
-    expect(() => validateEmbeddingProvider("local")).toThrow(
-      /EMBEDDING_BASE_URL is required/
-    );
-  });
-
-  it("accepts 'openai' when OPENAI_API_KEY is set", () => {
-    process.env.OPENAI_API_KEY = "sk-test";
-    expect(validateEmbeddingProvider("openai")).toBe("openai");
-  });
-
-  it("rejects 'openai' when OPENAI_API_KEY is missing", () => {
-    delete process.env.OPENAI_API_KEY;
-    expect(() => validateEmbeddingProvider("openai")).toThrow(
-      /OPENAI_API_KEY is required/
-    );
-  });
-
-  it("rejects any value other than 'openai' or 'local'", () => {
-    expect(() => validateEmbeddingProvider("anthropic")).toThrow(
-      /must be "openai" or "local"/
-    );
-  });
-});
-
-describe("validateChatProvider", () => {
-  const originalChatBaseUrl = process.env.CHAT_BASE_URL;
-  const originalEmbeddingBaseUrl = process.env.EMBEDDING_BASE_URL;
-  const originalApiKey = process.env.OPENAI_API_KEY;
-
-  afterEach(() => {
-    if (originalChatBaseUrl === undefined) delete process.env.CHAT_BASE_URL;
-    else process.env.CHAT_BASE_URL = originalChatBaseUrl;
-    if (originalEmbeddingBaseUrl === undefined) delete process.env.EMBEDDING_BASE_URL;
-    else process.env.EMBEDDING_BASE_URL = originalEmbeddingBaseUrl;
-    if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = originalApiKey;
-  });
-
-  it("defaults to the embedding provider when CHAT_PROVIDER is unset", () => {
-    delete process.env.CHAT_BASE_URL;
-    process.env.EMBEDDING_BASE_URL = "http://localhost:1234/v1";
-    expect(validateChatProvider(undefined, "local")).toBe("local");
-  });
-
-  it("overrides the embedding provider when CHAT_PROVIDER is explicitly set", () => {
-    process.env.OPENAI_API_KEY = "sk-test";
-    expect(validateChatProvider("openai", "local")).toBe("openai");
-  });
-
-  it("accepts 'local' when CHAT_BASE_URL is set", () => {
-    process.env.CHAT_BASE_URL = "http://localhost:11434/v1";
-    expect(validateChatProvider("local", "openai")).toBe("local");
-  });
-
-  it("accepts 'local' falling back to EMBEDDING_BASE_URL when CHAT_BASE_URL is unset", () => {
-    delete process.env.CHAT_BASE_URL;
-    process.env.EMBEDDING_BASE_URL = "http://localhost:1234/v1";
-    expect(validateChatProvider("local", "openai")).toBe("local");
-  });
-
-  it("rejects 'local' when neither CHAT_BASE_URL nor EMBEDDING_BASE_URL is set", () => {
-    delete process.env.CHAT_BASE_URL;
-    delete process.env.EMBEDDING_BASE_URL;
-    expect(() => validateChatProvider("local", "openai")).toThrow(
-      /CHAT_BASE_URL .* is required/
-    );
-  });
-
-  it("rejects 'openai' when OPENAI_API_KEY is missing", () => {
-    delete process.env.OPENAI_API_KEY;
-    expect(() => validateChatProvider("openai", "local")).toThrow(
-      /OPENAI_API_KEY is required/
-    );
-  });
-
-  it("rejects any value other than 'openai' or 'local'", () => {
-    expect(() => validateChatProvider("anthropic", "local")).toThrow(
-      /must be "openai" or "local"/
-    );
   });
 });
 

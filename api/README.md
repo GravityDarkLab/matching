@@ -31,9 +31,7 @@ cp api/.env.example api/.env
 | `ADMIN_USERNAME` | Admin login username | — |
 | `ADMIN_PASSWORD` | Admin login password | — |
 | `FORM_SECRET` | HMAC secret for submission keys | `openssl rand -hex 32` |
-| `EMBEDDING_PROVIDER` | `openai` or `local` | — |
-| `EMBEDDING_MODEL` | Model name (e.g. `text-embedding-3-small`) | — |
-| `EMBEDDING_BASE_URL` | Base URL for local provider | — |
+| `OPENAI_API_KEY` | OpenAI API key — matching always calls OpenAI (embeddings, rerank, match summaries, ice-breakers) | — |
 
 ### Optional variables
 
@@ -47,10 +45,8 @@ cp api/.env.example api/.env
 | `ADMIN_JWT_EXPIRY` | `8h` | Admin session JWT lifetime |
 | `APPLICANT_JWT_EXPIRY` | `30d` | Applicant portal session JWT lifetime |
 | `PUBLIC_URL` | _(empty)_ | Base URL for startup logs |
-| `OPENAI_API_KEY` | _(empty)_ | Required when `EMBEDDING_PROVIDER=openai` or `CHAT_PROVIDER=openai` |
-| `CHAT_PROVIDER` | `EMBEDDING_PROVIDER` | `openai` or `local` for ice-breakers/match-summaries/match-rerank — independent of the embedding provider |
-| `CHAT_BASE_URL` | `EMBEDDING_BASE_URL` | Base URL for a local chat provider, if different from the local embedding server |
-| `OPENAI_CHAT_MODEL` | `gpt-4o-mini` | Chat model name (e.g. `gpt-5.4-mini` for OpenAI) |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model (or `text-embedding-3-large`) |
+| `OPENAI_CHAT_MODEL` | `gpt-4o-mini` | Chat model for ice-breakers/match-summaries/match-rerank (e.g. `gpt-5.4-mini`) |
 
 ---
 
@@ -85,7 +81,7 @@ bun run --cwd .. seed:applicants -- --count 50 --clear
 
 ## Evaluating the matching score
 
-`bun run eval:rerank` (from the monorepo root) runs one full matching pass and prints embedding-vs-LLM score distributions side by side — no need to disable the rerank stage to compare, since every candidate already carries both numbers. Requires a seeded applicant pool and a configured `EMBEDDING_PROVIDER`/`OPENAI_CHAT_MODEL` (real embedding + LLM calls, not mocked):
+`bun run eval:rerank` (from the monorepo root) runs one full matching pass and prints embedding-vs-LLM score distributions side by side — no need to disable the rerank stage to compare, since every candidate already carries both numbers. Requires a seeded applicant pool and `OPENAI_API_KEY` set (real embedding + LLM calls, not mocked):
 
 ```bash
 bun run eval:rerank                  # api/.env.dev

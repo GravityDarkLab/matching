@@ -27,10 +27,9 @@ function mockEmbeddingsResponse(embeddings: number[][]): Response {
 // ─── Provider instantiation ───────────────────────────────────────────────────
 
 describe("getEmbeddingProvider — instantiation", () => {
-  it("returns a local provider matching setup.ts env vars", () => {
+  it("is always the openai provider", () => {
     const provider = getEmbeddingProvider();
-    expect(provider.name).toBe("local");
-    expect(provider.model).toBe(process.env.EMBEDDING_MODEL!);
+    expect(provider.name).toBe("openai");
   });
 
   it("is a singleton — two calls return the same instance", () => {
@@ -48,7 +47,7 @@ describe("getEmbeddingProvider — instantiation", () => {
 
   it("exposes the configured model name", () => {
     const provider = getEmbeddingProvider();
-    expect(provider.model).toBe("nomic-embed-text"); // from setup.ts
+    expect(provider.model).toBe(process.env.EMBEDDING_MODEL!);
   });
 
   it("exposes embed() and embedBatch() methods", () => {
@@ -70,7 +69,7 @@ describe("EmbeddingProvider.embedBatch", () => {
     spy.mockRestore();
   });
 
-  it("calls the configured base URL /embeddings endpoint", async () => {
+  it("calls OpenAI's /embeddings endpoint", async () => {
     const provider = getEmbeddingProvider();
     const spy = spyOn(globalThis, "fetch").mockResolvedValueOnce(
       mockEmbeddingsResponse([[0.1, 0.2, 0.3]])
@@ -80,8 +79,7 @@ describe("EmbeddingProvider.embedBatch", () => {
 
     expect(spy.mock.calls).toHaveLength(1);
     const [url] = spy.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/embeddings");
-    expect(url).toContain(process.env.EMBEDDING_BASE_URL!.replace(/\/$/, ""));
+    expect(url).toBe("https://api.openai.com/v1/embeddings");
     spy.mockRestore();
   });
 
@@ -98,6 +96,20 @@ describe("EmbeddingProvider.embedBatch", () => {
     const body = JSON.parse(init.body as string);
     expect(body.input).toEqual(texts);
     expect(body.model).toBe(process.env.EMBEDDING_MODEL!);
+    spy.mockRestore();
+  });
+
+  it("sends the configured API key as a bearer token", async () => {
+    const provider = getEmbeddingProvider();
+    const spy = spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      mockEmbeddingsResponse([[0.1, 0.2]])
+    );
+
+    await provider.embedBatch(["hello"]);
+
+    const [, init] = spy.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe(`Bearer ${process.env.OPENAI_API_KEY}`);
     spy.mockRestore();
   });
 

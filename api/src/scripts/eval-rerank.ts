@@ -16,9 +16,9 @@
  *                                               otherwise a cache hit short-circuits before the
  *                                               LLM is ever called, by design)
  *
- * Requires an existing applicant pool (bun run seed applicants) and a
- * configured EMBEDDING_PROVIDER + OPENAI_CHAT_MODEL in api/.env.<env> — this
- * makes real embedding + LLM calls, it is not a mock.
+ * Requires an existing applicant pool (bun run seed applicants) and
+ * OPENAI_API_KEY set in api/.env.<env> — this makes real embedding + LLM
+ * calls, it is not a mock.
  */
 
 import { getDb, closeDb } from "../db/connection.js";

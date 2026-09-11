@@ -15,46 +15,6 @@ function optional(name: string, defaultValue: string): string {
   return process.env[name] ?? defaultValue;
 }
 
-export function validateEmbeddingProvider(value: string): "openai" | "local" {
-  if (value !== "openai" && value !== "local") {
-    throw new Error(`EMBEDDING_PROVIDER must be "openai" or "local", got "${value}"`);
-  }
-  // Cross-field: validate provider-specific required vars now that we know the provider.
-  if (value === "local" && !process.env.EMBEDDING_BASE_URL) {
-    throw new Error("EMBEDDING_BASE_URL is required when EMBEDDING_PROVIDER=local");
-  }
-  if (value === "openai" && !process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is required when EMBEDDING_PROVIDER=openai");
-  }
-  return value;
-}
-
-/**
- * Chat (LLM) provider — independent of EMBEDDING_PROVIDER so embeddings and
- * chat completions can point at different backends (e.g. local embeddings
- * you've already cached + a hosted OpenAI model for chat, or vice versa).
- * Defaults to EMBEDDING_PROVIDER when CHAT_PROVIDER is unset, so existing
- * configs that only ever set one provider keep working unchanged.
- */
-export function validateChatProvider(
-  value: string | undefined,
-  embeddingProvider: "openai" | "local"
-): "openai" | "local" {
-  const provider = value ?? embeddingProvider;
-  if (provider !== "openai" && provider !== "local") {
-    throw new Error(`CHAT_PROVIDER must be "openai" or "local", got "${provider}"`);
-  }
-  if (provider === "openai" && !process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is required when CHAT_PROVIDER (or EMBEDDING_PROVIDER) resolves to openai");
-  }
-  if (provider === "local" && !process.env.CHAT_BASE_URL && !process.env.EMBEDDING_BASE_URL) {
-    throw new Error(
-      "CHAT_BASE_URL (or EMBEDDING_BASE_URL as a fallback) is required when CHAT_PROVIDER resolves to local"
-    );
-  }
-  return provider;
-}
-
 export function validateEncryptionKey(key: string): string {
   if (!/^[0-9a-fA-F]{64}$/.test(key)) {
     throw new Error(
@@ -79,8 +39,6 @@ export function parseAllowedOrigins(value: string): string[] {
     .filter(Boolean);
 }
 
-const embeddingProvider = validateEmbeddingProvider(required("EMBEDDING_PROVIDER"));
-
 export const env = {
   mongodbUri: required("MONGODB_URI"),
   mongodbDbName: optional("MONGODB_DB_NAME", "ons"),
@@ -97,21 +55,14 @@ export const env = {
   // Generate with: openssl rand -hex 32
   formSecret: required("FORM_SECRET"),
 
-  // ── Embedding provider (used only by the "embedding-cosine" algorithm) ──────
-  // Providers: openai | local
-  // See api/src/matching/embeddings/provider.ts for full documentation.
-  embeddingProvider,
-  embeddingModel: required("EMBEDDING_MODEL"),
-  embeddingBaseUrl: optional("EMBEDDING_BASE_URL", ""),  // required for local — validated above
-  openaiApiKey: optional("OPENAI_API_KEY", ""),          // required for openai — validated above
+  // ── OpenAI (embeddings + chat: matching, rerank, summaries, ice-breakers) ───
+  // Matching always calls OpenAI directly — no local-model option here. A
+  // local/self-hosted model may still power some *other*, non-matching
+  // feature in the future; that would get its own client, not a branch of
+  // this one (see api/src/matching/embeddings/provider.ts).
+  openaiApiKey: required("OPENAI_API_KEY"),
+  embeddingModel: optional("EMBEDDING_MODEL", "text-embedding-3-small"),
   openaiChatModel: optional("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
-
-  // ── Chat provider (icebreakers, match summaries, match rerank) ─────────────
-  // Independent of embeddingProvider above — see validateChatProvider.
-  chatProvider: validateChatProvider(process.env.CHAT_PROVIDER, embeddingProvider),
-  // Falls back to EMBEDDING_BASE_URL for the common case of one local server
-  // (LM Studio/Ollama) serving both embeddings and chat.
-  chatBaseUrl: optional("CHAT_BASE_URL", optional("EMBEDDING_BASE_URL", "")),
 
   // Scheduled matching job — disabled unless a positive interval is set
   matchingJobIntervalHours: parseFloat(optional("MATCHING_JOB_INTERVAL_HOURS", "0")),
