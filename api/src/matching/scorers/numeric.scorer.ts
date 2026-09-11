@@ -65,6 +65,12 @@ export function buildNumericVector(answers: Record<string, unknown>): number[] {
 // ─── Cosine similarity ────────────────────────────────────────────────────────
 
 export function cosine(a: number[], b: number[]): number {
+  // Different lengths means vectors from different embedding models — the
+  // loop below would silently produce NaN or a meaningless partial dot product.
+  if (a.length !== b.length) {
+    throw new Error(`[cosine] Vector length mismatch (${a.length} vs ${b.length}) — mixed embedding models?`);
+  }
+
   let dot = 0;
   let normA = 0;
   let normB = 0;
