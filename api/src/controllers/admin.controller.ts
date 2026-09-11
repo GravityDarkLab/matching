@@ -12,9 +12,10 @@ import {
   createQuestionnaire,
 } from "../services/admin.service.js";
 import { writeAuditLog, extractAuditContext } from "../middleware/audit.middleware.js";
-import { COOKIE_NAME, COOKIE_MAX_AGE } from "../middleware/auth.middleware.js";
+import { COOKIE_MAX_AGE } from "../middleware/auth.middleware.js";
 import { errorResponse } from "../utils/error-response.js";
 import { env } from "../config/env.js";
+import { ADMIN_COOKIE_NAME } from "../config/constants.js";
 import type { ApplicantStatus } from "../models/applicant.model.js";
 import type { AdminRole } from "../models/admin.model.js";
 import type { AdminLoginInput, CreateQuestionnaireInput } from "../validators/admin.validator.js";
@@ -32,7 +33,7 @@ export async function login(c: ValidatedContext<{ json: AdminLoginInput }>): Pro
     return c.json({ success: false, error: "Invalid credentials" }, 401);
   }
 
-  setCookie(c, COOKIE_NAME, token, {
+  setCookie(c, ADMIN_COOKIE_NAME, token, {
     httpOnly: true,
     secure: env.nodeEnv === "production",
     sameSite: "Lax",
@@ -50,7 +51,7 @@ export async function login(c: ValidatedContext<{ json: AdminLoginInput }>): Pro
  * POST /api/v1/admin/logout
  */
 export async function logout(c: Context): Promise<Response> {
-  deleteCookie(c, COOKIE_NAME, { path: "/api/v1" });
+  deleteCookie(c, ADMIN_COOKIE_NAME, { path: "/api/v1" });
   return c.json({ success: true });
 }
 
@@ -139,6 +140,7 @@ export async function getApplicantIdentityHandler(c: Context): Promise<Response>
       data: {
         alias: identity.alias,
         instagramHandle: identity.instagramHandle,
+        fullName: identity.fullName,
       },
     });
   } catch (err) {

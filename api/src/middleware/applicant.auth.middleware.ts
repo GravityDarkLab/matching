@@ -1,9 +1,10 @@
 import { Context, Next } from "hono";
+import { env } from "../config/env.js";
+import { APPLICANT_COOKIE_NAME } from "../config/constants.js";
 import { signJwt, verifyJwt, expiryToSeconds, extractToken } from "./jwt.util.js";
 
-const EXPIRY = "30d";
+const EXPIRY = env.applicantJwtExpiry;
 
-export const APPLICANT_COOKIE = "ons_applicant_session";
 export const APPLICANT_COOKIE_MAX_AGE = expiryToSeconds(EXPIRY);
 
 export async function signApplicantToken(applicantId: string, alias: string): Promise<string> {
@@ -22,7 +23,7 @@ async function verifyApplicantToken(token: string): Promise<{ sub: string; alias
 
 export async function requireApplicant(c: Context, next: Next): Promise<Response | void> {
   // Prefer Bearer header for API clients; fall back to HttpOnly session cookie
-  const token = extractToken(c, APPLICANT_COOKIE, false);
+  const token = extractToken(c, APPLICANT_COOKIE_NAME, false);
   if (!token) {
     return c.json({ success: false, error: "Unauthorized" }, 401);
   }
@@ -44,7 +45,7 @@ export async function requireApplicant(c: Context, next: Next): Promise<Response
  * requiring authentication.
  */
 export async function tryGetApplicantSession(c: Context): Promise<string | null> {
-  const token = extractToken(c, APPLICANT_COOKIE, false);
+  const token = extractToken(c, APPLICANT_COOKIE_NAME, false);
   if (!token) return null;
   const claims = await verifyApplicantToken(token);
   return claims?.sub ?? null;

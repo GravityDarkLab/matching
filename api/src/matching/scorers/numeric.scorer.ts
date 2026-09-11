@@ -1,12 +1,11 @@
 /**
- * Shared numeric-vector helpers for the cosine-based algorithms
- * (`cosine` and `embedding-cosine`).
+ * Numeric-vector helpers for the matching scorer (scorer.ts).
  *
- * Both algorithms encode an applicant's structural preferences
- * (relationship type, long-distance, affection, religion openness) as the
- * same fixed-length numeric vector and compare them with cosine similarity —
- * this module is the single source of truth for that encoding so the two
- * algorithms can't drift apart.
+ * Encodes an applicant's structural preferences (relationship type,
+ * long-distance, affection, religion openness) as a fixed-length numeric
+ * vector compared with cosine similarity — the NUMERIC component of the
+ * embedding-stage score. Kept as its own module so the encoding and the
+ * cosine/rounding helpers stay independently unit-testable.
  */
 
 // ─── Relationship type encoding ───────────────────────────────────────────────

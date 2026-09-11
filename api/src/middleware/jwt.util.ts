@@ -2,8 +2,7 @@ import { Context } from "hono";
 import { getCookie } from "hono/cookie";
 import { jwtVerify, SignJWT, type JWTPayload } from "jose";
 import { env } from "../config/env.js";
-
-export const JWT_ALGORITHM = "HS256";
+import { JWT_ALGORITHM } from "../config/constants.js";
 
 const JWT_SECRET = new TextEncoder().encode(env.jwtSecret);
 

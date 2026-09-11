@@ -26,7 +26,7 @@ export async function runScheduledMatchingJob(): Promise<void> {
       return;
     }
 
-    const results  = await runFullMatchingPass("embedding-cosine");
+    const results  = await runFullMatchingPass();
     const proposals = generateCoupleProposals(applicants, results);
     const saved    = await saveMatchProposals(proposals, "embedding-cosine");
 

@@ -20,13 +20,20 @@ const mockGetMyProfile        = mock(async () => null as any);
 const mockGetMyAnswers        = mock(async () => null as any);
 const mockUpdateMyAnswers     = mock(async () => {});
 const mockGetMyMatches        = mock(async () => [] as any[]);
-const mockRequestContact      = mock(async () => ({ targetInstagram: "@partner", iceBreakers: [] as string[], dateIdeas: [] as string[] }));
-const mockRespondToContact    = mock(async () => {});
+const mockRequestContact      = mock(async () => ({ iceBreakers: [] as string[], dateIdeas: [] as string[] }));
+const mockRespondToContact    = mock(async () => ({ partnerInstagram: null as string | null }));
 const mockWithdrawContact     = mock(async () => {});
 const mockReportOutcome       = mock(async () => {});
 const mockDeactivateMyAccount = mock(async () => {});
 const mockCancelAccountDeletion = mock(async () => {});
 const mockDeleteMyAccountNow  = mock(async () => {});
+const mockGetOrGenerateMatchSummary = mock(async () => null as any);
+const mockGetDistanceNudge        = mock(async () => null as { matchId: string } | null);
+const mockAcknowledgeDistanceNudge = mock(async () => {});
+
+mock.module("../../services/match-summary.service.js", () => ({
+  getOrGenerateMatchSummary: mockGetOrGenerateMatchSummary,
+}));
 
 mock.module("../../services/profile.service.js", () => ({
   loginWithMagicToken: mockLoginWithMagicToken,
@@ -43,6 +50,8 @@ mock.module("../../services/profile.service.js", () => ({
   deactivateMyAccount: mockDeactivateMyAccount,
   cancelAccountDeletion: mockCancelAccountDeletion,
   deleteMyAccountNow:    mockDeleteMyAccountNow,
+  getDistanceNudge:         mockGetDistanceNudge,
+  acknowledgeDistanceNudge: mockAcknowledgeDistanceNudge,
 }));
 
 mock.module("../../middleware/audit.middleware.js", () => ({
@@ -51,7 +60,10 @@ mock.module("../../middleware/audit.middleware.js", () => ({
 }));
 
 import { Hono } from "hono";
-import { profileRoutes } from "../../routes/profile.routes.js";
+// Dynamic, not static: static imports evaluate before this file's
+// mock.module() calls run, and a route captures its rate limiter by value
+// at definition time — a static import would bake in the real limiter.
+const { profileRoutes } = await import("../../routes/profile.routes.js");
 import { signApplicantToken } from "../../middleware/applicant.auth.middleware.js";
 import { signAdminToken } from "../../middleware/auth.middleware.js";
 import { ObjectId } from "mongodb";
@@ -100,12 +112,17 @@ beforeEach(() => {
   mockDeactivateMyAccount.mockReset();
   mockCancelAccountDeletion.mockReset();
   mockDeleteMyAccountNow.mockReset();
+  mockGetOrGenerateMatchSummary.mockReset();
+  mockGetDistanceNudge.mockReset();
+  mockAcknowledgeDistanceNudge.mockReset();
+  mockGetDistanceNudge.mockResolvedValue(null);
 
   // Restore defaults
   mockLoginWithMagicToken.mockResolvedValue(null);
   mockSetPassword.mockResolvedValue(null);
   mockGetMyMatches.mockResolvedValue([]);
-  mockRequestContact.mockResolvedValue({ targetInstagram: "@partner", iceBreakers: ["Q1"], dateIdeas: ["D1"] });
+  mockRequestContact.mockResolvedValue({ iceBreakers: ["Q1"], dateIdeas: ["D1"] });
+  mockRespondToContact.mockResolvedValue({ partnerInstagram: null });
 });
 
 // ── POST /profile/login ───────────────────────────────────────────────────────
@@ -225,13 +242,13 @@ describe("POST /profile/set-password", () => {
 // ── GET /profile/suggest-password ─────────────────────────────────────────────
 
 describe("GET /profile/suggest-password", () => {
-  it("returns a 4-word passphrase without auth", async () => {
+  it("returns a 6-word passphrase without auth", async () => {
     const res = await get("/profile/suggest-password");
     expect(res.status).toBe(200);
     const body = await res.json() as any;
     expect(body.success).toBe(true);
     expect(typeof body.suggestion).toBe("string");
-    expect(body.suggestion.split("-")).toHaveLength(4);
+    expect(body.suggestion.split("-")).toHaveLength(6);
   });
 });
 
@@ -489,9 +506,8 @@ describe("POST /profile/matches/:id/contact", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 200 with targetInstagram + iceBreakers + dateIdeas", async () => {
+  it("returns 200 with iceBreakers + dateIdeas (no Instagram — mutual reveal happens on accept)", async () => {
     mockRequestContact.mockResolvedValue({
-      targetInstagram: "@partner_handle",
       iceBreakers: ["What's your favourite place?"],
       dateIdeas: ["Coffee walk"],
     });
@@ -500,7 +516,7 @@ describe("POST /profile/matches/:id/contact", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as any;
     expect(body.success).toBe(true);
-    expect(body.data.targetInstagram).toBe("@partner_handle");
+    expect(body.data.targetInstagram).toBeUndefined();
     expect(Array.isArray(body.data.iceBreakers)).toBe(true);
   });
 });
@@ -593,6 +609,79 @@ describe("POST /profile/matches/:id/outcome", () => {
     const res = await post("/profile/matches/abc123/outcome", { outcome: "start_over" }, token);
     expect(res.status).toBe(422);
   });
+
+  it("accepts optional outcomeFeedback tags and note", async () => {
+    const token = await applicantToken();
+    const res = await post(
+      "/profile/matches/abc123/outcome",
+      { outcome: "failed", outcomeFeedback: { tags: ["too_far", "no_spark"], note: "We tried" } },
+      token,
+    );
+    expect(res.status).toBe(200);
+    expect(mockReportOutcome).toHaveBeenCalledWith(
+      VALID_APPLICANT_ID,
+      "abc123",
+      "failed",
+      { feedback: { tags: ["too_far", "no_spark"], note: "We tried" }, continuation: undefined },
+      expect.anything(),
+    );
+  });
+
+  it("accepts an optional continuation choice", async () => {
+    const token = await applicantToken();
+    const res = await post(
+      "/profile/matches/abc123/outcome",
+      { outcome: "failed", continuation: "break" },
+      token,
+    );
+    expect(res.status).toBe(200);
+    expect(mockReportOutcome).toHaveBeenCalledWith(
+      VALID_APPLICANT_ID,
+      "abc123",
+      "failed",
+      { feedback: undefined, continuation: "break" },
+      expect.anything(),
+    );
+  });
+
+  it("returns 422 for an unknown feedback tag", async () => {
+    const token = await applicantToken();
+    const res = await post(
+      "/profile/matches/abc123/outcome",
+      { outcome: "failed", outcomeFeedback: { tags: ["made_up_tag"] } },
+      token,
+    );
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 403 when reportOutcome rejects as too early", async () => {
+    mockReportOutcome.mockRejectedValue(new AppError("Too early to report this outcome — available 3 days after you started dating", 403));
+    const token = await applicantToken();
+    const res = await post("/profile/matches/abc123/outcome", { outcome: "failed" }, token);
+    expect(res.status).toBe(403);
+  });
+});
+
+// ── POST /profile/matches/:id/nudge-ack ──────────────────────────────────────
+
+describe("POST /profile/matches/:id/nudge-ack", () => {
+  it("returns 401 without token", async () => {
+    const res = await post("/profile/matches/abc123/nudge-ack", { openUp: true });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 200 and forwards openUp", async () => {
+    const token = await applicantToken();
+    const res = await post("/profile/matches/abc123/nudge-ack", { openUp: true }, token);
+    expect(res.status).toBe(200);
+    expect(mockAcknowledgeDistanceNudge).toHaveBeenCalledWith(VALID_APPLICANT_ID, "abc123", true);
+  });
+
+  it("returns 422 when openUp is missing", async () => {
+    const token = await applicantToken();
+    const res = await post("/profile/matches/abc123/nudge-ack", {}, token);
+    expect(res.status).toBe(422);
+  });
 });
 
 // ── POST /profile/deactivate ──────────────────────────────────────────────────
@@ -681,5 +770,179 @@ describe("POST /profile/logout", () => {
     const res = await post("/profile/logout", {}, token);
     expect(res.status).toBe(200);
     expect(res.headers.get("set-cookie")).toMatch(/ons_applicant_session=;/);
+  });
+});
+
+// ── GET /profile/matches/:id/summary ─────────────────────────────────────────
+
+describe("GET /profile/matches/:id/summary", () => {
+  const MATCH_ID = new ObjectId().toHexString();
+
+  const CACHED_SUMMARY = {
+    pros: ["You share similar long-term relationship goals.", "Both value family and close friendships."],
+    cons: ["Religious importance differs — worth early discussion."],
+    generatedAt: new Date("2026-06-18T10:00:00Z"),
+    model: "gpt-4o-mini",
+  };
+
+  it("returns 401 without a token", async () => {
+    const res = await get(`/profile/matches/${MATCH_ID}/summary`);
+    expect(res.status).toBe(401);
+    expect(mockGetOrGenerateMatchSummary).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 when an admin token is used (wrong audience)", async () => {
+    const adminToken = await signAdminToken("admin-id", "admin", "admin");
+    const res = await get(`/profile/matches/${MATCH_ID}/summary`, adminToken);
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 200 with summary data when service returns a cached summary", async () => {
+    mockGetOrGenerateMatchSummary.mockResolvedValue(CACHED_SUMMARY);
+    const token = await applicantToken();
+    const res = await get(`/profile/matches/${MATCH_ID}/summary`, token);
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.success).toBe(true);
+    expect(Array.isArray(body.data.pros)).toBe(true);
+    expect(Array.isArray(body.data.cons)).toBe(true);
+    expect(body.data.pros).toHaveLength(2);
+    expect(body.data.cons).toHaveLength(1);
+    expect(typeof body.data.model).toBe("string");
+  });
+
+  it("calls the service with the correct matchId and applicantId", async () => {
+    mockGetOrGenerateMatchSummary.mockResolvedValue(CACHED_SUMMARY);
+    const token = await applicantToken();
+    await get(`/profile/matches/${MATCH_ID}/summary`, token);
+    const [calledMatchId, calledApplicantId] = mockGetOrGenerateMatchSummary.mock.calls[0] as unknown as [string, string];
+    expect(calledMatchId).toBe(MATCH_ID);
+    expect(calledApplicantId).toBe(VALID_APPLICANT_ID);
+  });
+
+  it("returns 404 when the service returns null (match not found or not a participant)", async () => {
+    mockGetOrGenerateMatchSummary.mockResolvedValue(null);
+    const token = await applicantToken();
+    const res = await get(`/profile/matches/${MATCH_ID}/summary`, token);
+    expect(res.status).toBe(404);
+    const body = await res.json() as any;
+    expect(body.success).toBe(false);
+  });
+
+  it("returns 500 when the service throws unexpectedly", async () => {
+    mockGetOrGenerateMatchSummary.mockRejectedValue(new Error("LLM timeout"));
+    const token = await applicantToken();
+    const res = await get(`/profile/matches/${MATCH_ID}/summary`, token);
+    expect(res.status).toBe(500);
+  });
+
+  it("works with a match id that looks like a real ObjectId hex string", async () => {
+    mockGetOrGenerateMatchSummary.mockResolvedValue(CACHED_SUMMARY);
+    const token = await applicantToken();
+    const res = await get(`/profile/matches/64f1a2b3c4d5e6f7a8b9c0d5/summary`, token);
+    expect(res.status).toBe(200);
+  });
+});
+
+// ── Adversarial / reliability edge cases ─────────────────────────────────────
+
+describe("Adversarial: cross-authentication boundary", () => {
+  it("admin token is rejected on /profile/me", async () => {
+    const adminToken = await signAdminToken("admin-id", "admin", "admin");
+    const res = await get("/profile/me", adminToken);
+    expect(res.status).toBe(401);
+  });
+
+  it("applicant token is rejected on a non-existent admin endpoint", async () => {
+    const token = await applicantToken();
+    const res = await get("/profile/admin-only-route", token);
+    // Should 401 or 404 — not 200 with applicant data
+    expect(res.status).not.toBe(200);
+  });
+});
+
+describe("Adversarial: malformed / oversized payloads", () => {
+  it("POST /profile/matches/:id/respond with non-boolean accept → 422", async () => {
+    const token = await applicantToken();
+    const res = await post("/profile/matches/abc123/respond", { accept: "yes" }, token);
+    expect(res.status).toBe(422);
+  });
+
+  it("POST /profile/matches/:id/respond with accept=null → 422", async () => {
+    const token = await applicantToken();
+    const res = await post("/profile/matches/abc123/respond", { accept: null }, token);
+    expect(res.status).toBe(422);
+  });
+
+  it("POST /profile/matches/:id/respond with extra unknown fields still works", async () => {
+    const token = await applicantToken();
+    const res = await post("/profile/matches/abc123/respond", { accept: true, injected: "x".repeat(5000) }, token);
+    expect(res.status).toBe(200);
+  });
+
+  it("POST /profile/matches/:id/outcome with unknown outcome value → 422", async () => {
+    const token = await applicantToken();
+    const res = await post("/profile/matches/abc123/outcome", { outcome: "married" }, token);
+    expect(res.status).toBe(422);
+  });
+
+  it("POST /profile/matches/:id/outcome with numeric outcome → 422", async () => {
+    const token = await applicantToken();
+    const res = await post("/profile/matches/abc123/outcome", { outcome: 1 }, token);
+    expect(res.status).toBe(422);
+  });
+
+  it("GET /profile/matches with threshold=NaN ignores the bad param (uses default)", async () => {
+    const token = await applicantToken();
+    const res = await get("/profile/matches?threshold=not-a-number", token);
+    // Should succeed (NaN coerces to 0 or is clamped/ignored)
+    expect([200, 422]).toContain(res.status);
+  });
+
+  it("GET /profile/matches with negative threshold clamps to default range", async () => {
+    const token = await applicantToken();
+    const res = await get("/profile/matches?threshold=-1", token);
+    expect(res.status).toBe(200);
+  });
+
+  it("GET /profile/matches with threshold > 1 still returns 200 (service clamps)", async () => {
+    const token = await applicantToken();
+    const res = await get("/profile/matches?threshold=2.5", token);
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("Adversarial: auth header variations", () => {
+  it("rejects an empty Authorization header", async () => {
+    const res = await app.request("/profile/me", {
+      headers: { Authorization: "" },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects 'Bearer' with no token after it", async () => {
+    const res = await app.request("/profile/me", {
+      headers: { Authorization: "Bearer " },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects 'Basic' scheme instead of Bearer", async () => {
+    const res = await app.request("/profile/me", {
+      headers: { Authorization: "Basic dXNlcjpwYXNz" },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects a JWT with tampered payload (signature mismatch)", async () => {
+    const token = await applicantToken();
+    const parts = token.split(".");
+    // Flip a byte in the payload
+    const fakePayload = Buffer.from(parts[1] + "x", "base64url").toString("base64url");
+    const tampered = `${parts[0]}.${fakePayload}.${parts[2]}`;
+    const res = await app.request("/profile/me", {
+      headers: { Authorization: `Bearer ${tampered}` },
+    });
+    expect(res.status).toBe(401);
   });
 });

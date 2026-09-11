@@ -11,9 +11,25 @@ export const formSubmissionSchema = z.object({
     .string()
     .regex(/^\d+\.\d+\.\d+$/, "questionnaireVersion must be semver (e.g. 1.0.0)"),
 
+  // Honeypot: legitimate clients always send this field empty; bots that
+  // scrape and fill all fields will populate it, triggering a silent reject.
+  _verify: z.string().optional(),
+
   answers: z
     .object({
       // Identity (sensitive)
+      first_name: z
+        .string()
+        .trim()
+        .min(1, "first_name is required")
+        .max(50)
+        .regex(/^[\p{L}\p{M}'\- ]+$/u, "first_name contains invalid characters"),
+      last_name: z
+        .string()
+        .trim()
+        .min(1, "last_name is required")
+        .max(50)
+        .regex(/^[\p{L}\p{M}'\- ]+$/u, "last_name contains invalid characters"),
       instagram_handle: z
         .string()
         .min(1, "instagram_handle is required")
@@ -48,6 +64,12 @@ export const formSubmissionSchema = z.object({
         "Not Sure",
       ]),
       open_to_long_distance: z.boolean(),
+
+      // Age preferences (optional — null means no preference)
+      max_age_gap: z.number().int().min(0).max(40).nullable().optional(),
+      open_to_older: z.boolean().nullable().optional(),
+      open_to_younger: z.boolean().nullable().optional(),
+
       preferred_physical_traits: z.string().min(1).max(1000),
       preferred_character_traits: z.string().min(1).max(1000),
       deal_breakers: z.string().min(1).max(1000),
@@ -69,7 +91,7 @@ export const formSubmissionSchema = z.object({
         error: "You must agree to the disclaimer",
       }),
     })
-    .passthrough(), // allow extra fields — they'll be filtered against questionnaire
+    .loose(), // allow extra fields — they'll be filtered against questionnaire
 });
 
 export type FormSubmissionInput = z.infer<typeof formSubmissionSchema>;

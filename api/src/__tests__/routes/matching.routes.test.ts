@@ -20,24 +20,16 @@ const mockRunFullMatchingPass   = mock(async () => ({} as Record<string, any[]>)
 const mockSaveMatchProposals    = mock(async (..._: any[]) => 0);
 const mockLoadActiveApplicants  = mock(async () => [] as any[]);
 
-// generateCoupleProposals (matching/proposals.js) is pure and DB-free, so it
-// stays unmocked. Bun's mock.module is process-global: mocking it here would
-// replace the shared export binding and poison the unit tests in full runs.
 mock.module("../../matching/engine.js", () => ({
-  getCandidates:          mockGetCandidates,
-  runFullMatchingPass:    mockRunFullMatchingPass,
-  ALGORITHM_REGISTRY:     {},
+  getCandidates:       mockGetCandidates,
+  runFullMatchingPass: mockRunFullMatchingPass,
 }));
 
-// match.service is used by the matching controller to persist couple proposals.
-// Mock it so tests never attempt a real MongoDB connection.
 mock.module("../../services/match.service.js", () => ({
-  saveMatchProposals:       mockSaveMatchProposals,
-  loadActiveApplicants:     mockLoadActiveApplicants,
+  saveMatchProposals:      mockSaveMatchProposals,
+  loadActiveApplicants:    mockLoadActiveApplicants,
 }));
 
-// match-state.service is used by the matching controller to promote applicants
-// after a matching pass. Mock it so tests never attempt a real MongoDB connection.
 mock.module("../../services/match-state.service.js", () => ({
   promoteAppliedToMatched: mock(async () => 0),
 }));
@@ -51,7 +43,10 @@ mock.module("../../services/appConfig.service.js", () => ({
 }));
 
 import { Hono } from "hono";
-import { matchingRoutes } from "../../routes/matching.routes.js";
+// Dynamic, not static: static imports evaluate before this file's
+// mock.module() calls run, and a route captures its rate limiter by value
+// at definition time — a static import would bake in the real limiter.
+const { matchingRoutes } = await import("../../routes/matching.routes.js");
 import { signAdminToken } from "../../middleware/auth.middleware.js";
 
 // ── Test app ──────────────────────────────────────────────────────────────────
@@ -115,23 +110,16 @@ describe("GET /matching/candidates/:applicantId", () => {
     expect(body.applicantId).toBe("64b1234567890abcdef01234");
   });
 
-  it("passes algorithm query param to getCandidates", async () => {
-    await get("/matching/candidates/abc123?algorithm=cosine&top=5", await adminToken());
-    const [id, topN, algo] = mockGetCandidates.mock.calls[0] as unknown as [string, number, string];
+  it("passes applicantId and topN to getCandidates", async () => {
+    await get("/matching/candidates/abc123?top=5", await adminToken());
+    const [id, topN] = mockGetCandidates.mock.calls[0] as unknown as [string, number];
     expect(id).toBe("abc123");
     expect(topN).toBe(5);
-    expect(algo).toBe("cosine");
-  });
-
-  it("uses baseline algorithm by default", async () => {
-    await get("/matching/candidates/abc123", await adminToken());
-    const [, , algo] = mockGetCandidates.mock.calls[0] as unknown as [string, number, string];
-    expect(algo).toBe("baseline");
   });
 
   it("caps top at 50 regardless of query param", async () => {
     await get("/matching/candidates/abc123?top=999", await adminToken());
-    const [, topN] = mockGetCandidates.mock.calls[0] as unknown as [string, number, string];
+    const [, topN] = mockGetCandidates.mock.calls[0] as unknown as [string, number];
     expect(topN).toBe(50);
   });
 
@@ -155,8 +143,6 @@ describe("GET /matching/candidates/:applicantId", () => {
     expect(res.status).toBe(500);
   });
 
-  // tested: candidates endpoint requires admin auth — compatibility data and
-  // paid embedding calls must not be reachable anonymously
   it("returns 401 without a token", async () => {
     const res = await get("/matching/candidates/64b1234567890abcdef01234");
     expect(res.status).toBe(401);
@@ -168,33 +154,37 @@ describe("GET /matching/candidates/:applicantId", () => {
 
 describe("POST /matching/run", () => {
   it("returns 401 without a token", async () => {
-    const res = await post("/matching/run", { algorithm: "baseline" });
+    const res = await post("/matching/run", {});
     expect(res.status).toBe(401);
   });
 
-  it("returns 200 with results on a valid admin run (baseline)", async () => {
+  it("returns 200 with embedding-cosine algorithm", async () => {
     const token = await adminToken();
-    const res = await post("/matching/run", { algorithm: "baseline" }, token);
+    const res = await post("/matching/run", {}, token);
     expect(res.status).toBe(200);
     const body = await res.json() as any;
     expect(body.success).toBe(true);
-    expect(body.algorithm).toBe("baseline");
+    expect(body.algorithm).toBe("embedding-cosine");
     expect(typeof body.totalApplicants).toBe("number");
     expect(typeof body.durationMs).toBe("number");
   });
 
-  it("passes the algorithm to runFullMatchingPass", async () => {
+  it("accepts explicit embedding-cosine algorithm", async () => {
     const token = await adminToken();
-    await post("/matching/run", { algorithm: "cosine" }, token);
-    const [algo] = mockRunFullMatchingPass.mock.calls[0] as unknown as [string];
-    expect(algo).toBe("cosine");
+    const res = await post("/matching/run", { algorithm: "embedding-cosine" }, token);
+    expect(res.status).toBe(200);
   });
 
-  it("defaults to embedding-cosine when algorithm is omitted", async () => {
+  it("returns 422 for deprecated algorithm values", async () => {
     const token = await adminToken();
-    await post("/matching/run", {}, token);
-    const [algo] = mockRunFullMatchingPass.mock.calls[0] as unknown as [string];
-    expect(algo).toBe("embedding-cosine");
+    const res = await post("/matching/run", { algorithm: "baseline" }, token);
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 for cosine algorithm (removed)", async () => {
+    const token = await adminToken();
+    const res = await post("/matching/run", { algorithm: "cosine" }, token);
+    expect(res.status).toBe(422);
   });
 
   it("returns 422 for an unknown algorithm value", async () => {
@@ -206,7 +196,7 @@ describe("POST /matching/run", () => {
   it("returns 404 when the engine throws", async () => {
     mockRunFullMatchingPass.mockRejectedValue(new AppError("No active questionnaire found", 404));
     const token = await adminToken();
-    const res = await post("/matching/run", { algorithm: "baseline" }, token);
+    const res = await post("/matching/run", {}, token);
     expect(res.status).toBe(404);
     const body = await res.json() as any;
     expect(body.success).toBe(false);
@@ -220,7 +210,7 @@ describe("POST /matching/run", () => {
       id3: makeCandidates(1),
     });
     const token = await adminToken();
-    const res = await post("/matching/run", { algorithm: "baseline" }, token);
+    const res = await post("/matching/run", {}, token);
     const body = await res.json() as any;
     expect(body.totalApplicants).toBe(3);
   });
@@ -228,8 +218,6 @@ describe("POST /matching/run", () => {
 
 // ── GET /matching/last-run ────────────────────────────────────────────────────
 
-// tested: persisted last-run summary — auth gate, null when never run,
-// stored value passthrough, and write-through on POST /matching/run
 describe("GET /matching/last-run", () => {
   it("returns 401 without a token", async () => {
     const res = await get("/matching/last-run");
@@ -260,13 +248,13 @@ describe("GET /matching/last-run", () => {
     expect(body.data).toEqual(stored);
   });
 
-  it("POST /matching/run persists the last-run summary", async () => {
+  it("POST /matching/run persists the last-run summary with embedding-cosine", async () => {
     const token = await adminToken();
-    await post("/matching/run", { algorithm: "baseline" }, token);
+    await post("/matching/run", {}, token);
     expect(mockSetConfig).toHaveBeenCalledTimes(1);
     const [key, value] = mockSetConfig.mock.calls[0] as unknown as [string, any];
     expect(key).toBe("matching.lastRun");
-    expect(value.algorithm).toBe("baseline");
+    expect(value.algorithm).toBe("embedding-cosine");
     expect(value.triggeredBy).toBe("admin");
     expect(typeof value.durationMs).toBe("number");
   });

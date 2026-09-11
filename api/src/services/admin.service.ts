@@ -138,7 +138,7 @@ export async function getApplicantById(
 export async function getApplicantIdentity(
   id: string,
   auditCtx: AuditContext
-): Promise<{ alias: string; instagramHandle: string } | null> {
+): Promise<{ alias: string; instagramHandle: string; fullName: string | null } | null> {
   const db = await getDb();
   const col = getApplicantsCollection(db);
 
@@ -152,14 +152,14 @@ export async function getApplicantIdentity(
   const applicant = await col.findOne({ _id: objectId });
   if (!applicant) return null;
 
-  const instagramHandle = await revealIdentityById(objectId, {
+  const identity = await revealIdentityById(objectId, {
     actor: auditCtx,
     action: "RESOLVE_IDENTITY",
     targetAlias: applicant.alias,
   });
-  if (!instagramHandle) return null;
+  if (!identity) return null;
 
-  return { alias: applicant.alias, instagramHandle };
+  return { alias: applicant.alias, instagramHandle: identity.instagram, fullName: identity.fullName };
 }
 
 /**

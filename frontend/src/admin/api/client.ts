@@ -1,6 +1,5 @@
 import type { Applicant, AuditLog, Match, MatchCandidate, MatchingRun, MatchingLastRun, MatchStatus, Paginated } from '../types'
-
-const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3001'
+import { API_BASE as BASE } from '../../config/api'
 
 // All requests include credentials so the browser sends the HttpOnly session cookie.
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
@@ -82,8 +81,8 @@ export async function fetchApplicant(id: string): Promise<Applicant> {
 
 export async function fetchIdentity(
   id: string,
-): Promise<{ alias: string; instagramHandle: string }> {
-  const res = await request<{ data: { alias: string; instagramHandle: string } }>(
+): Promise<{ alias: string; instagramHandle: string; fullName: string | null }> {
+  const res = await request<{ data: { alias: string; instagramHandle: string; fullName: string | null } }>(
     `/api/v1/admin/applicants/${id}/identity`,
   )
   return res.data

@@ -93,6 +93,8 @@ describe('EditProfileForm', () => {
     await waitFor(() => expect(mockUpdateMyAnswers).toHaveBeenCalledTimes(1))
     const payload = mockUpdateMyAnswers.mock.calls[0][0]
     expect(payload.work).toBe('Students')
+    expect(payload).not.toHaveProperty('first_name')
+    expect(payload).not.toHaveProperty('last_name')
     expect(payload).not.toHaveProperty('instagram_handle')
     expect(payload).not.toHaveProperty('disclaimer_agreed')
     expect(payload).not.toHaveProperty('birth_date')
@@ -127,12 +129,16 @@ describe('EditProfileForm', () => {
 describe('toAnswersPayload', () => {
   const baseValues = {
     ...ANSWERS,
+    first_name: 'locked',
+    last_name: 'locked',
     instagram_handle: 'locked',
     disclaimer_agreed: true,
   } as FormValues
 
   it('strips the locked fields', () => {
     const payload = toAnswersPayload(baseValues)
+    expect(payload).not.toHaveProperty('first_name')
+    expect(payload).not.toHaveProperty('last_name')
     expect(payload).not.toHaveProperty('instagram_handle')
     expect(payload).not.toHaveProperty('disclaimer_agreed')
     expect(payload).not.toHaveProperty('birth_date')

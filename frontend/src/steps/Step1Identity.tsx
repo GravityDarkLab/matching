@@ -7,7 +7,7 @@ import Autocomplete from '../components/ui/Autocomplete'
 import { CITIES } from '../data/cities'
 
 interface Props { control: Control<FormValues>; errors: FieldErrors<FormValues> }
-export const FIELDS: (keyof FormValues)[] = ['instagram_handle', 'location']
+export const FIELDS: (keyof FormValues)[] = ['first_name', 'last_name', 'instagram_handle', 'location']
 
 export default function Step1Identity({ control, errors }: Props) {
   const { t } = useTranslation()
@@ -18,6 +18,28 @@ export default function Step1Identity({ control, errors }: Props) {
         <p className="text-sm text-muted leading-relaxed">{t('steps.s1.subtitle')}</p>
       </div>
       <div className="flex flex-col gap-4">
+        <div className="flex gap-3">
+          <div className="flex-1 min-w-0">
+            <Controller
+              name="first_name"
+              control={control}
+              render={({ field }) => (
+                <Input label={t('steps.s1.firstName')} placeholder={t('steps.s1.firstNamePlaceholder')}
+                  error={errors.first_name?.message} required {...field} />
+              )}
+            />
+          </div>
+          <div className="flex-1 min-w-0">
+            <Controller
+              name="last_name"
+              control={control}
+              render={({ field }) => (
+                <Input label={t('steps.s1.lastName')} placeholder={t('steps.s1.lastNamePlaceholder')}
+                  error={errors.last_name?.message} required {...field} />
+              )}
+            />
+          </div>
+        </div>
         <Controller
           name="instagram_handle"
           control={control}

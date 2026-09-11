@@ -8,7 +8,8 @@ export type AuditAction =
   | "ADMIN_LOGIN"
   | "CREATE_QUESTIONNAIRE"
   | "REGENERATE_MAGIC_LINK"
-  | "APPLICANT_SELF_DELETE";
+  | "APPLICANT_SELF_DELETE"
+  | "APPLICANT_REPORT_OUTCOME";
 
 export interface AuditLogDoc {
   _id: ObjectId;

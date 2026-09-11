@@ -12,21 +12,22 @@ import type { MatchDoc } from "../models/match.model.js";
 import {
   toMatchView,
   assertMatchTransition,
+  assertOutcomeEligible,
   expireConflictingMatches,
   transitionApplicantStatus,
   applyMatchStatusSideEffects,
+  recalcOrphanedStatuses,
   DELETION_GRACE_MS,
   type ApplicantMatchView,
 } from "./match-state.service.js";
 import {
   resolveIdentityById,
   revealIdentityById,
-  identityExistsById,
 } from "../privacy/identity.service.js";
 import { hashMagicToken } from "../privacy/magic-token.js";
 import { writeAuditLog } from "../middleware/audit.middleware.js";
 import { generateIceBreakers } from "./icebreaker.service.js";
-import { embedApplicant } from "./embedding.service.js";
+import { embedApplicant, buildTexts } from "./embedding.service.js";
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -108,27 +109,102 @@ export async function changePassword(
 export interface ApplicantProfileView {
   applicantId: string;
   alias: string;
+  fullName: string | null;
   status: ApplicantDoc["status"];
   scoreThreshold: number;
   createdAt: Date;
   deletionScheduledAt: Date | null;
+  distanceNudge: { matchId: string } | null;
 }
 
 export async function getMyProfile(applicantId: string): Promise<ApplicantProfileView | null> {
   const db  = await getDb();
   const col = getApplicantsCollection(db);
+  const oid = new ObjectId(applicantId);
 
-  const doc = await col.findOne({ _id: new ObjectId(applicantId) });
+  const doc = await col.findOne({ _id: oid });
   if (!doc) return null;
+
+  // Own identity, not a partner reveal — no audit log (mirrors getMyAnswers
+  // returning the applicant's own data without logging).
+  const identity = await resolveIdentityById(oid);
 
   return {
     applicantId: doc._id.toHexString(),
     alias:          doc.alias,
+    fullName:       identity?.fullName ?? null,
     status:         doc.status,
     scoreThreshold: doc.scoreThreshold ?? 0.8,
     createdAt:      doc.createdAt,
     deletionScheduledAt: doc.deletionScheduledAt ?? null,
+    distanceNudge: await getDistanceNudge(applicantId),
   };
+}
+
+/**
+ * Surfaces a one-time, dismissible suggestion when the applicant's most
+ * recent failed match was tagged "too_far" and they're not already open to
+ * long-distance matches. Returns null once acknowledged (see
+ * acknowledgeDistanceNudge) or when no qualifying match exists.
+ */
+export async function getDistanceNudge(applicantId: string): Promise<{ matchId: string } | null> {
+  const db       = await getDb();
+  const appCol   = getApplicantsCollection(db);
+  const matchCol = getMatchesCollection(db);
+  const oid      = new ObjectId(applicantId);
+
+  const applicant = await appCol.findOne({ _id: oid }, { projection: { answers: 1 } });
+  if (!applicant || applicant.answers?.["open_to_long_distance"] !== false) return null;
+
+  const match = await matchCol.findOne(
+    {
+      $or: [{ applicantAId: oid }, { applicantBId: oid }],
+      status: "failed",
+      "outcomeFeedback.tags": "too_far",
+      "outcomeFeedback.nudgeAcknowledged": { $ne: true },
+    },
+    { sort: { updatedAt: -1 }, projection: { _id: 1 } },
+  );
+
+  return match ? { matchId: match._id.toHexString() } : null;
+}
+
+/**
+ * Marks the distance nudge as acknowledged for a match (shown at most once),
+ * and — only if the applicant opted in — opens them up to long-distance
+ * matches. Declining still acknowledges the nudge so it doesn't reappear.
+ */
+export async function acknowledgeDistanceNudge(
+  applicantId: string,
+  matchId: string,
+  openUp: boolean,
+): Promise<void> {
+  const db       = await getDb();
+  const matchCol = getMatchesCollection(db);
+  const appCol   = getApplicantsCollection(db);
+  const oid      = new ObjectId(applicantId);
+
+  let matchOid: ObjectId;
+  try { matchOid = new ObjectId(matchId); } catch {
+    throw new AppError("Match not found", 404);
+  }
+
+  const result = await matchCol.updateOne(
+    {
+      _id: matchOid,
+      $or: [{ applicantAId: oid }, { applicantBId: oid }],
+      "outcomeFeedback.tags": "too_far",
+    },
+    { $set: { "outcomeFeedback.nudgeAcknowledged": true } },
+  );
+  if (result.matchedCount === 0) throw new AppError("Match not found", 404);
+
+  if (openUp) {
+    await appCol.updateOne(
+      { _id: oid },
+      { $set: { "answers.open_to_long_distance": true, updatedAt: new Date() } },
+    );
+  }
 }
 
 // ── Answers (self-service questionnaire edits) ───────────────────────────────
@@ -136,7 +212,12 @@ export async function getMyProfile(applicantId: string): Promise<ApplicantProfil
 // Never sent to the applicant editor: instagram_handle is defense in depth
 // (identities live in a separate, encrypted collection), disclaimer_agreed
 // is a one-time consent with no display value.
-const HIDDEN_ANSWER_KEYS = new Set(["instagram_handle", "disclaimer_agreed"]);
+const HIDDEN_ANSWER_KEYS = new Set([
+  "instagram_handle",
+  "first_name",
+  "last_name",
+  "disclaimer_agreed",
+]);
 
 // Shown to the applicant (read-only) but never overwritten by them:
 // birth_date and gender_identity are identity facts only admins may change.
@@ -188,10 +269,21 @@ export async function updateMyAnswers(
   await col.updateOne({ _id: oid }, { $set: { answers: merged, updatedAt: new Date() } });
 
   // Refresh embeddings in the background (same as submission) so the next
-  // matching run scores against the updated text
-  embedApplicant(oid, merged).catch((err) =>
-    console.error(`[profile] Background embedding refresh failed for ${doc.alias}:`, err)
-  );
+  // matching run scores against the updated text — but only if the edit
+  // actually touched an embedding-relevant field. Most edits (location, age
+  // preferences, etc.) don't, and re-embedding unchanged text wastes API calls.
+  const oldTexts = buildTexts(doc.answers ?? {});
+  const newTexts = buildTexts(merged);
+  const textChanged =
+    oldTexts.profile !== newTexts.profile ||
+    oldTexts.preference !== newTexts.preference ||
+    oldTexts.dealBreakers !== newTexts.dealBreakers;
+
+  if (textChanged) {
+    embedApplicant(oid, merged).catch((err) =>
+      console.error(`[profile] Background embedding refresh failed for ${doc.alias}:`, err)
+    );
+  }
 }
 
 // ── Matches ───────────────────────────────────────────────────────────────────
@@ -238,17 +330,16 @@ export async function getMyMatches(
     : [];
   const answersById = new Map(partners.map((p) => [p._id.toHexString(), p.answers]));
 
-  // Reveal partner identities for committed matches (in_progress/dating) —
-  // the contact flow already revealed the target's handle to the initiator,
-  // and the initiator consented by initiating. The decryption is audit-logged
-  // once per applicant per match, not on every page load.
-  const instagramByMatchId = new Map<string, string>();
+  // Reveal partner identities for mutually-accepted matches (dating only) —
+  // both parties consented when the target accepted the contact request.
+  // The decryption is audit-logged once per applicant per match, not on every page load.
+  const identityByMatchId = new Map<string, { instagram: string; fullName: string | null }>();
   for (const d of docs) {
-    if (d.status !== "in_progress" && d.status !== "dating") continue;
+    if (d.status !== "dating") continue;
     const partnerId = d.applicantAId.equals(oid) ? d.applicantBId : d.applicantAId;
     const alreadyLogged = d.identityViewLoggedFor?.includes(applicantId) ?? false;
 
-    const handle = alreadyLogged
+    const identity = alreadyLogged
       ? await resolveIdentityById(partnerId)
       : await revealIdentityById(partnerId, {
           actor: { actorId: applicantId, ipAddress: audit.ipAddress, userAgent: audit.userAgent },
@@ -260,8 +351,8 @@ export async function getMyMatches(
             reason: "match_view",
           },
         });
-    if (!handle) continue;
-    instagramByMatchId.set(d._id.toHexString(), handle);
+    if (!identity) continue;
+    identityByMatchId.set(d._id.toHexString(), identity);
 
     if (!alreadyLogged) {
       await matchCol.updateOne(
@@ -273,11 +364,13 @@ export async function getMyMatches(
 
   return docs.map((d) => {
     const partnerId = d.applicantAId.equals(oid) ? d.applicantBId : d.applicantAId;
+    const identity = identityByMatchId.get(d._id.toHexString());
     return toMatchView(
       d,
       oid,
       answersById.get(partnerId.toHexString()),
-      instagramByMatchId.get(d._id.toHexString())
+      identity?.instagram,
+      identity?.fullName
     );
   });
 }
@@ -285,7 +378,6 @@ export async function getMyMatches(
 // ── Contact flow ──────────────────────────────────────────────────────────────
 
 export interface ContactResult {
-  targetInstagram: string;
   iceBreakers: string[];
   dateIdeas: string[];
 }
@@ -293,7 +385,6 @@ export interface ContactResult {
 export async function requestContact(
   applicantId: string,
   matchId: string,
-  audit: { ipAddress: string; userAgent: string } = { ipAddress: "unknown", userAgent: "unknown" },
 ): Promise<ContactResult> {
   const db       = await getDb();
   const matchCol = getMatchesCollection(db);
@@ -306,7 +397,6 @@ export async function requestContact(
     throw new AppError("Match not found", 404);
   }
 
-  // Load match to authorise the actor before the atomic write
   const match = await matchCol.findOne({ _id: matchOid });
   if (!match) throw new AppError("Match not found", 404);
 
@@ -316,7 +406,6 @@ export async function requestContact(
     ? match.applicantBId
     : match.applicantAId;
 
-  // Fetch icebreakers before the atomic claim (no side-effects yet)
   const [actorDoc, targetDoc] = await Promise.all([
     appCol.findOne({ _id: actorId }),
     appCol.findOne({ _id: targetId }),
@@ -326,19 +415,10 @@ export async function requestContact(
     ? await generateIceBreakers(actorDoc, targetDoc)
     : { questions: [], dateIdeas: [] };
 
-  // Pre-flight identity check before any mutation — avoids an atomic write
-  // attempt in the common case where the identity is already gone. This is
-  // existence-only; the decrypt (and its audit log) happens below via
-  // revealIdentityById, after the atomic claim but before any irreversible
-  // side effects on the actor's other matches.
-  if (!(await identityExistsById(targetId))) {
-    throw new AppError("Target identity not found", 404);
-  }
-
   const now = new Date();
 
-  // Atomically claim the transition — filter on status:"proposed" prevents double-contact
-  // from concurrent requests both passing assertMatchTransition above
+  // Atomically claim the transition — filter on status:"proposed" prevents
+  // double-contact from concurrent requests both passing assertMatchTransition
   const claimed = await matchCol.findOneAndUpdate(
     { _id: matchOid, status: "proposed" },
     {
@@ -349,9 +429,6 @@ export async function requestContact(
         dateIdeas,
         contactRequestedAt: now,
         updatedAt:          now,
-        // The contact reveal is logged below — repeat views on the matches
-        // page must not write another entry for the initiator
-        identityViewLoggedFor: [applicantId],
       },
     },
     { returnDocument: "after" },
@@ -361,57 +438,20 @@ export async function requestContact(
     throw new AppError("Match is no longer available for contact — it may have been claimed concurrently", 409);
   }
 
-  // Decrypt + audit log after winning the race — revealIdentityById logs
-  // before the plaintext is returned. Done before expireConflictingMatches
-  // below: if the target's identity vanished between the pre-flight check
-  // and here (e.g. they self-deleted concurrently), roll the claim back to
-  // "proposed" instead of leaving it stuck in_progress with the actor's
-  // other matches already expired.
-  const targetInstagram = await revealIdentityById(targetId, {
-    actor: { actorId: applicantId, ipAddress: audit.ipAddress, userAgent: audit.userAgent },
-    action: "APPLICANT_REVEAL_IDENTITY",
-    targetAlias: match.applicantAId.equals(actorId)
-      ? match.applicantBAlias
-      : match.applicantAAlias,
-    metadata: {
-      actorType: "applicant",
-      matchId,
-      reason: "contact_request",
-    },
-  });
-
-  if (!targetInstagram) {
-    await matchCol.updateOne(
-      { _id: matchOid, status: "in_progress", initiatorId: actorId },
-      {
-        $set:   { status: "proposed", updatedAt: new Date() },
-        $unset: {
-          initiatorId:           "",
-          iceBreakers:           "",
-          dateIdeas:             "",
-          contactRequestedAt:    "",
-          identityViewLoggedFor: "",
-        },
-      },
-    );
-    throw new AppError("Target identity not found", 404);
-  }
-
   // Exclusive contact: committing to one match expires the initiator's other
-  // proposed/in_progress matches. The target's other matches are untouched —
-  // they haven't acted yet. (Accept later expires both sides as before.)
-  // Runs only after the reveal above succeeds, so a failed request never
-  // costs the actor their other matches.
+  // proposed/in_progress matches. Identity is NOT revealed here — mutual
+  // consent happens only when the target accepts (respondToContact).
   await expireConflictingMatches([actorId], matchOid);
 
-  return { targetInstagram, iceBreakers: questions, dateIdeas };
+  return { iceBreakers: questions, dateIdeas };
 }
 
 export async function respondToContact(
   applicantId: string,
   matchId: string,
-  accept: boolean
-): Promise<void> {
+  accept: boolean,
+  audit: { ipAddress: string; userAgent: string } = { ipAddress: "unknown", userAgent: "unknown" },
+): Promise<{ partnerInstagram: string | null; partnerFullName: string | null }> {
   const db       = await getDb();
   const matchCol = getMatchesCollection(db);
 
@@ -427,6 +467,9 @@ export async function respondToContact(
 
   assertMatchTransition(match, "respond", actorId);
 
+  const initiatorId = match.initiatorId!;
+  const targetId    = actorId; // actor IS the target (the one responding)
+
   const now = new Date();
 
   // Atomic claim — the status filter prevents concurrent accept/decline from
@@ -438,6 +481,7 @@ export async function respondToContact(
         status:             accept ? "dating" : "declined",
         contactRespondedAt: now,
         updatedAt:          now,
+        ...(accept ? { datingStartedAt: now } : {}),
       },
     },
     { returnDocument: "after" },
@@ -447,10 +491,57 @@ export async function respondToContact(
     throw new AppError("Match was already responded to", 409);
   }
 
-  if (accept) {
-    const ids = [match.applicantAId, match.applicantBId];
-    await applyMatchStatusSideEffects("dating", ids);
-  }
+  if (!accept) return { partnerInstagram: null, partnerFullName: null };
+
+  const ids = [match.applicantAId, match.applicantBId];
+  await applyMatchStatusSideEffects("dating", ids);
+
+  // Mutual identity reveal — both parties consented.
+  // Reveal initiator's Instagram to the target, and target's Instagram to initiator.
+  // Audit-log both. Subsequent page loads use resolveIdentityById (no double-log).
+  const initiatorAlias = match.applicantAId.equals(initiatorId)
+    ? match.applicantAAlias
+    : match.applicantBAlias;
+  const targetAlias = match.applicantAId.equals(targetId)
+    ? match.applicantAAlias
+    : match.applicantBAlias;
+
+  // initiatorIdentity is what the responding applicant (target) now sees —
+  // it's the response payload that lets the UI reveal it without a reload.
+  const [initiatorIdentity] = await Promise.all([
+    revealIdentityById(initiatorId, {
+      actor: { actorId: applicantId, ipAddress: audit.ipAddress, userAgent: audit.userAgent },
+      action: "APPLICANT_REVEAL_IDENTITY",
+      targetAlias: initiatorAlias,
+      metadata: { actorType: "applicant", matchId, reason: "mutual_accept" },
+    }),
+    revealIdentityById(targetId, {
+      // initiatorId is the one gaining access to this identity, but the
+      // actual request — and its real IP/UA — came from the target
+      // accepting just now, so log that, not a synthetic "system" actor.
+      actor: { actorId: initiatorId.toHexString(), ipAddress: audit.ipAddress, userAgent: audit.userAgent },
+      action: "APPLICANT_REVEAL_IDENTITY",
+      targetAlias: targetAlias,
+      metadata: { actorType: "applicant", matchId, reason: "mutual_accept" },
+    }),
+  ]);
+
+  // Mark both as having had their identity view logged for this match
+  await matchCol.updateOne(
+    { _id: matchOid },
+    {
+      $addToSet: {
+        identityViewLoggedFor: {
+          $each: [initiatorId.toHexString(), applicantId],
+        },
+      },
+    }
+  );
+
+  return {
+    partnerInstagram: initiatorIdentity?.instagram ?? null,
+    partnerFullName: initiatorIdentity?.fullName ?? null,
+  };
 }
 
 /**
@@ -498,10 +589,17 @@ export async function withdrawContact(
   }
 }
 
+export interface ReportOutcomeOptions {
+  feedback?: { tags: string[]; note?: string };
+  continuation?: "continue" | "break";
+}
+
 export async function reportOutcome(
   applicantId: string,
   matchId: string,
-  outcome: "success" | "failed"
+  outcome: "success" | "failed",
+  options?: ReportOutcomeOptions,
+  audit: { ipAddress: string; userAgent: string } = { ipAddress: "unknown", userAgent: "unknown" },
 ): Promise<void> {
   const db       = await getDb();
   const matchCol = getMatchesCollection(db);
@@ -517,15 +615,27 @@ export async function reportOutcome(
   if (!match) throw new AppError("Match not found", 404);
 
   assertMatchTransition(match, "outcome", actorId);
+  assertOutcomeEligible(match, outcome, actorId);
 
   const now = new Date();
-  const ids  = [match.applicantAId, match.applicantBId];
+  const ids = [match.applicantAId, match.applicantBId];
+
+  const setFields: Record<string, unknown> = {
+    status: outcome === "success" ? "success" : "failed",
+    updatedAt: now,
+  };
+  if (outcome === "failed" && options?.feedback) {
+    setFields.outcomeFeedback = {
+      tags: options.feedback.tags,
+      ...(options.feedback.note ? { note: options.feedback.note } : {}),
+    };
+  }
 
   // Atomic claim — only one partner's outcome report wins; a concurrent
   // conflicting report gets 409 instead of silently overwriting state
   const claimed = await matchCol.findOneAndUpdate(
     { _id: matchOid, status: { $in: ["dating", "in_progress"] } },
-    { $set: { status: outcome === "success" ? "success" : "failed", updatedAt: now } },
+    { $set: setFields },
     { returnDocument: "after" },
   );
 
@@ -533,9 +643,40 @@ export async function reportOutcome(
     throw new AppError("Outcome was already reported for this match", 409);
   }
 
-  // Mirror deactivateMyAccount: a partner heading toward deletion shouldn't
-  // leave other proposed/in_progress matches around for someone else to contact.
-  await applyMatchStatusSideEffects(outcome, ids);
+  if (outcome === "failed" && options?.feedback) {
+    await writeAuditLog(
+      { actorId: applicantId, ipAddress: audit.ipAddress, userAgent: audit.userAgent },
+      "APPLICANT_REPORT_OUTCOME",
+      { targetApplicantId: actorId, metadata: { matchId, tags: options.feedback.tags } },
+    );
+  }
+
+  if (outcome === "success") {
+    // Mirror deactivateMyAccount: a partner heading toward deletion shouldn't
+    // leave other proposed/in_progress matches around for someone else to contact.
+    await applyMatchStatusSideEffects("success", ids);
+    return;
+  }
+
+  // "failed": default to "continue" unless the reporter explicitly chose to
+  // take a break. The break is the REPORTER's choice about the REPORTER's
+  // account only — it must never deactivate the partner (or start their
+  // deletion countdown) on someone else's say-so. The partner re-enters the
+  // pool exactly as in the "continue" case.
+  if (options?.continuation === "break") {
+    const partnerId = match.applicantAId.equals(actorId)
+      ? match.applicantBId
+      : match.applicantAId;
+    // Reporter: same deactivation as deactivateMyAccount (inactive + grace-
+    // period deletion countdown, cancellable from the dashboard).
+    const deletionScheduledAt = new Date(Date.now() + DELETION_GRACE_MS);
+    await transitionApplicantStatus([actorId], "inactive", { deletionScheduledAt });
+    await expireConflictingMatches([actorId], matchOid);
+    // Partner: back into the matching pool.
+    await applyMatchStatusSideEffects("failed", [partnerId]);
+  } else {
+    await applyMatchStatusSideEffects("failed", ids);
+  }
 }
 
 export async function deactivateMyAccount(applicantId: string): Promise<void> {
@@ -601,10 +742,34 @@ export async function deleteMyAccountNow(
     { targetApplicantId: oid, targetAlias: doc.alias, metadata: { actorType: "applicant" } },
   );
 
+  // Collect partner IDs from all active matches before deleting them —
+  // we need these to recalculate partner statuses after the data is gone.
+  const activeMatches = await matchCol
+    .find(
+      {
+        $or: [{ applicantAId: oid }, { applicantBId: oid }],
+        status: { $in: ["proposed", "in_progress", "dating"] },
+      },
+      { projection: { applicantAId: 1, applicantBId: 1 } },
+    )
+    .toArray();
+
+  // Dedupe — the same partner can appear across multiple active matches.
+  const partnerIdMap = new Map(
+    activeMatches.map((m) => {
+      const partnerId = m.applicantAId.equals(oid) ? m.applicantBId : m.applicantAId;
+      return [partnerId.toHexString(), partnerId] as const;
+    }),
+  );
+  const partnerIds = [...partnerIdMap.values()];
+
   await Promise.all([
     appCol.deleteOne({ _id: oid }),
     identitiesCol.deleteOne({ applicantId: oid }),
     embeddingsCol.deleteOne({ applicantId: oid }),
     matchCol.deleteMany({ $or: [{ applicantAId: oid }, { applicantBId: oid }] }),
   ]);
+
+  // Recalculate partner statuses now that their shared matches are gone.
+  await recalcOrphanedStatuses(partnerIds);
 }

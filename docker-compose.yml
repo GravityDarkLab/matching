@@ -14,7 +14,7 @@
 # The API is never exposed externally — all traffic enters through nginx.
 # VITE_API_URL must be empty so the browser uses relative paths (same origin).
 #
-# Required: MONGODB_URI  ENCRYPTION_KEY  JWT_SECRET  FORM_SECRET  VITE_INVITE_KEY
+# Required: MONGODB_URI  ENCRYPTION_KEY  JWT_SECRET  FORM_SECRET  VITE_INVITE_KEY  OPENAI_API_KEY
 # See api/.env.example for the full variable reference.
 
 name: ons
@@ -44,10 +44,9 @@ services:
       JWT_EXPIRY:         ${JWT_EXPIRY:-8h}
       PUBLIC_URL:         ${PUBLIC_URL:-}
       ALLOWED_ORIGINS:    ${ALLOWED_ORIGINS:-}
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-local}
-      EMBEDDING_MODEL:    ${EMBEDDING_MODEL:-}
-      OPENAI_API_KEY:     ${OPENAI_API_KEY:-}
-      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      OPENAI_API_KEY:     ${OPENAI_API_KEY:?OPENAI_API_KEY must be set}
+      EMBEDDING_MODEL:    ${EMBEDDING_MODEL:-text-embedding-3-small}
+      OPENAI_CHAT_MODEL:  ${OPENAI_CHAT_MODEL:-gpt-4o-mini}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:${PORT:-3001}/health || exit 1"]
       interval: 30s
