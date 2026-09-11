@@ -5,8 +5,6 @@
 // stay permanently excluded).
 import { describe, it, expect } from "bun:test";
 import { ObjectId } from "mongodb";
-// Import from proposals.js directly: route tests mock.module() the engine
-// facade globally, which would otherwise replace this function in full-suite runs.
 import { generateCoupleProposals, proposalPairAction } from "../../../matching/proposals.js";
 import type { RankedCandidate } from "../../../matching/engine.js";
 import type { ApplicantDoc } from "../../../models/applicant.model.js";
