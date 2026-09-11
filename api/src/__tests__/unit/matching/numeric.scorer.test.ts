@@ -66,6 +66,12 @@ describe("cosine", () => {
     expect(cosine([1, 1], [0, 0])).toBe(0);
     expect(cosine([0, 0], [0, 0])).toBe(0);
   });
+
+  it("throws on mismatched lengths instead of returning a meaningless score", () => {
+    // e.g. a 1024-dim vector from one embedding model vs a 1536-dim one from another
+    expect(() => cosine([1, 0, 0], [1, 0])).toThrow(/length mismatch/);
+    expect(() => cosine([1, 0], [1, 0, 0])).toThrow(/length mismatch/);
+  });
 });
 
 describe("round", () => {

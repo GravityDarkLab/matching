@@ -165,10 +165,8 @@ export async function getOrComputeEmbeddings(
     // Never let one bad applicant's text (a provider rate limit, content-
     // policy rejection, or timeout) abort matching for every applicant in
     // this batch — including the majority whose embeddings were already
-    // cached and didn't need this call at all. On failure, the stale
-    // applicants simply stay absent from the returned map (and stay marked
-    // stale in the DB), so the next matching run retries them automatically
-    // once the provider recovers.
+    // cached and didn't need this call at all. Failed applicants stay marked
+    // stale in the DB, so the next matching run retries them automatically.
     try {
       const staleTexts = stale.map((a) => buildTexts(a.answers));
       const profileTexts     = staleTexts.map((t) => t.profile);
@@ -181,51 +179,59 @@ export async function getOrComputeEmbeddings(
         provider.embedBatch(dealBreakerTexts),
       ]);
 
-      const saved = await Promise.all(
+      let failedSaves = 0;
+      await Promise.all(
         stale.map(async (applicant, i) => {
-          const vectors = {
-            profile:      profileEmbs[i],
-            preference:   preferenceEmbs[i],
-            dealBreakers: dealBreakerEmbs[i],
-          };
-
-          try {
-            await saveEmbedding(applicant._id, provider.name, provider.model, vectors);
-          } catch (err) {
-            console.error(
-              `[embedding] Failed to persist embedding for applicant ${applicant._id.toHexString()} — ` +
-              `skipping it this round:`,
-              err
-            );
-            return null;
-          }
-
           const doc: EmbeddingDoc = {
             _id: new ObjectId(),
             applicantId: applicant._id,
             provider: provider.name,
             model: provider.model,
             textVersion: CURRENT_TEXT_VERSION,
-            ...vectors,
+            profile:      profileEmbs[i],
+            preference:   preferenceEmbs[i],
+            dealBreakers: dealBreakerEmbs[i],
             createdAt: new Date(),
           };
-          return doc;
+          // Use the fresh vectors for this run even if persisting them
+          // fails — keeping the old ones could mix two models' vector spaces.
+          storedByApplicant.set(applicant._id.toHexString(), doc);
+
+          try {
+            await saveEmbedding(applicant._id, provider.name, provider.model, doc);
+          } catch (err) {
+            failedSaves++;
+            console.error(
+              `[embedding] Failed to persist embedding for applicant ${applicant._id.toHexString()} ` +
+              `(used for this run, recomputed next run):`,
+              err
+            );
+          }
         })
       );
 
-      for (const doc of saved) {
-        if (doc) storedByApplicant.set(doc.applicantId.toHexString(), doc);
-      }
-
-      const failedCount = saved.filter((doc) => doc === null).length;
       console.log(
-        `[embedding] Done. ${stale.length - failedCount}/${stale.length} embeddings saved` +
-        (failedCount > 0 ? ` (${failedCount} failed, will retry next run).` : ".")
+        `[embedding] Done. ${stale.length - failedSaves}/${stale.length} embeddings saved` +
+        (failedSaves > 0 ? ` (${failedSaves} failed to persist, will recompute next run).` : ".")
       );
     } catch (err) {
+      // An outdated embedding from a different model lives in a different
+      // vector space (often a different length) — scoring it against
+      // current-model vectors yields meaningless numbers, so drop it. One
+      // that's only outdated on textVersion is the same space: reuse it for
+      // this round rather than losing that applicant entirely.
+      let dropped = 0;
+      for (const applicant of stale) {
+        const existing = storedByApplicant.get(applicant._id.toHexString());
+        if (existing && existing.model !== provider.model) {
+          storedByApplicant.delete(applicant._id.toHexString());
+          dropped++;
+        }
+      }
       console.error(
         `[embedding] Failed to compute ${stale.length} missing/stale embeddings — ` +
-        `degrading to skip them this round (they remain stale and will be retried next run):`,
+        `skipping them this round (${dropped} outdated-model embeddings excluded; ` +
+        `retried next run):`,
         err
       );
     }
