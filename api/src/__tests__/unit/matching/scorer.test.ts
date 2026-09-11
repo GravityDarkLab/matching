@@ -8,7 +8,7 @@ mock.module("../../../services/embedding.service.js", () => ({
   getOrComputeEmbeddings: mock(async () => new Map()),
 }));
 
-import { prepare, score } from "../../../matching/scorer.js";
+import { prepare, score, hasEmbedding } from "../../../matching/scorer.js";
 import { getOrComputeEmbeddings } from "../../../services/embedding.service.js";
 import { makeApplicant, makeQuestionnaire, FULL_ANSWERS } from "./_fixtures.js";
 import { ObjectId } from "mongodb";
@@ -22,7 +22,7 @@ function unitVec(dim: number, index: number): number[] {
   return v;
 }
 
-// Helper: populate the embedding cache for given applicants via prepare()
+// Helper: builds a ScoreContext for given applicants via prepare()
 async function prepareWithVecs(
   applicants: ReturnType<typeof makeApplicant>[],
   vecFn: (id: string) => { profile: number[]; preference: number[]; dealBreakers: number[] }
@@ -46,15 +46,15 @@ async function prepareWithVecs(
   );
 
   (getOrComputeEmbeddings as ReturnType<typeof mock>).mockImplementation(async () => embMap);
-  await prepare(applicants, q);
+  return prepare(applicants, q);
 }
 
 describe("scorer — score() without prepare()", () => {
-  it("throws when embeddings are not in cache", () => {
+  it("throws when the given context has no embeddings", async () => {
     const a = makeApplicant(FULL_ANSWERS);
     const b = makeApplicant(FULL_ANSWERS);
-    // Don't call prepare() — cache should be empty after module load
-    expect(() => score(a, b, q)).toThrow(/prepare/i);
+    const context = await prepareWithVecs([], () => ({ profile: [], preference: [], dealBreakers: [] }));
+    expect(() => score(a, b, q, context)).toThrow(/prepare/i);
   });
 });
 
@@ -63,13 +63,13 @@ describe("scorer — prepare() + score() pipeline", () => {
     const a = makeApplicant(FULL_ANSWERS);
     const b = makeApplicant(FULL_ANSWERS);
 
-    await prepareWithVecs([a, b], () => ({
+    const context = await prepareWithVecs([a, b], () => ({
       profile: [1.0, 0.0, 0.0],
       preference: [1.0, 0.0, 0.0],
       dealBreakers: [0.0, 0.0, 1.0],
     }));
 
-    expect(() => score(a, b, q)).not.toThrow();
+    expect(() => score(a, b, q, context)).not.toThrow();
   });
 
   it("identical embedding vectors → score = 1.0", async () => {
@@ -77,9 +77,9 @@ describe("scorer — prepare() + score() pipeline", () => {
     const b = makeApplicant(FULL_ANSWERS);
 
     const sameVec = { profile: [1.0, 0.0], preference: [1.0, 0.0], dealBreakers: [0.0, 1.0] };
-    await prepareWithVecs([a, b], () => sameVec);
+    const context = await prepareWithVecs([a, b], () => sameVec);
 
-    const { score: s } = score(a, b, q);
+    const { score: s } = score(a, b, q, context);
     expect(s).toBe(1.0);
   });
 
@@ -88,13 +88,13 @@ describe("scorer — prepare() + score() pipeline", () => {
     const b = makeApplicant(FULL_ANSWERS);
     const ids = [a._id.toHexString(), b._id.toHexString()];
 
-    await prepareWithVecs([a, b], (id) => ({
+    const context = await prepareWithVecs([a, b], (id) => ({
       profile:      id === ids[0] ? unitVec(2, 0) : unitVec(2, 1), // orthogonal
       preference:   [1.0, 0.0],
       dealBreakers: [0.0, 1.0],
     }));
 
-    const { breakdown } = score(a, b, q);
+    const { breakdown } = score(a, b, q, context);
     expect(breakdown.lifestyle_similarity).toBe(0);
   });
 
@@ -104,13 +104,13 @@ describe("scorer — prepare() + score() pipeline", () => {
     const ids = [a._id.toHexString(), b._id.toHexString()];
 
     // A's deal breakers = same direction as B's profile → high overlap = bad
-    await prepareWithVecs([a, b], (id) => ({
+    const context = await prepareWithVecs([a, b], (id) => ({
       profile:      id === ids[1] ? [1.0, 0.0] : [0.0, 1.0],
       preference:   [1.0, 0.0],
       dealBreakers: id === ids[0] ? [1.0, 0.0] : [0.0, 1.0], // A's breaks = B's profile
     }));
 
-    const { breakdown } = score(a, b, q);
+    const { breakdown } = score(a, b, q, context);
     expect(breakdown.deal_breaker_penalty).toBeLessThan(1.0);
   });
 
@@ -118,7 +118,7 @@ describe("scorer — prepare() + score() pipeline", () => {
     const a = makeApplicant(FULL_ANSWERS);
     const b = makeApplicant({ relationship_type: "Short Term", open_to_long_distance: false });
 
-    await prepareWithVecs([a, b], (id) => {
+    const context = await prepareWithVecs([a, b], (id) => {
       const isA = id === a._id.toHexString();
       return {
         profile:      isA ? [1.0, 0.0] : [0.0, 1.0],
@@ -127,7 +127,7 @@ describe("scorer — prepare() + score() pipeline", () => {
       };
     });
 
-    const { score: s } = score(a, b, q);
+    const { score: s } = score(a, b, q, context);
     expect(s).toBeGreaterThanOrEqual(0);
     expect(s).toBeLessThanOrEqual(1);
   });
@@ -135,26 +135,26 @@ describe("scorer — prepare() + score() pipeline", () => {
   it("score is rounded to 2 decimal places", async () => {
     const a = makeApplicant(FULL_ANSWERS);
     const b = makeApplicant(FULL_ANSWERS);
-    await prepareWithVecs([a, b], () => ({
+    const context = await prepareWithVecs([a, b], () => ({
       profile: [0.6, 0.8],
       preference: [0.3, 0.7],
       dealBreakers: [0.0, 1.0],
     }));
 
-    const { score: s } = score(a, b, q);
+    const { score: s } = score(a, b, q, context);
     expect(s).toBe(Math.round(s * 100) / 100);
   });
 
   it("breakdown contains the expected keys including age_modifier", async () => {
     const a = makeApplicant(FULL_ANSWERS);
     const b = makeApplicant(FULL_ANSWERS);
-    await prepareWithVecs([a, b], () => ({
+    const context = await prepareWithVecs([a, b], () => ({
       profile: [1.0, 0.0],
       preference: [1.0, 0.0],
       dealBreakers: [0.0, 1.0],
     }));
 
-    const { breakdown } = score(a, b, q);
+    const { breakdown } = score(a, b, q, context);
     expect(Object.keys(breakdown)).toEqual(
       expect.arrayContaining([
         "numeric_compatibility",
@@ -193,9 +193,53 @@ describe("scorer — prepare() internals", () => {
 
     // Return an empty map → no embeddings stored
     (getOrComputeEmbeddings as ReturnType<typeof mock>).mockResolvedValueOnce(new Map());
-    await prepare([a, b], q);
+    const context = await prepare([a, b], q);
 
-    // Both applicants missing from cache → score() should throw
-    expect(() => score(a, b, q)).toThrow();
+    // Both applicants missing from context -> score() should throw
+    expect(() => score(a, b, q, context)).toThrow();
+    expect(hasEmbedding(context, a)).toBe(false);
+    expect(hasEmbedding(context, b)).toBe(false);
+  });
+
+  // Regression: prepare() used to mutate one shared module-level cache, so a
+  // concurrent prepare() call (e.g. an admin opening a candidate-detail page
+  // mid full-pass) could clear/overwrite another in-flight call's data.
+  it("two prepare() calls for different applicant sets don't interfere with each other", async () => {
+    const a = makeApplicant(FULL_ANSWERS);
+    const b = makeApplicant(FULL_ANSWERS);
+    const c = makeApplicant(FULL_ANSWERS);
+
+    const contextAB = await prepareWithVecs([a, b], () => ({
+      profile: [1.0, 0.0], preference: [1.0, 0.0], dealBreakers: [0.0, 1.0],
+    }));
+    // A second, independent prepare() call for a different applicant set —
+    // simulates a concurrent request racing the first.
+    const contextC = await prepareWithVecs([c], () => ({
+      profile: [0.0, 1.0], preference: [0.0, 1.0], dealBreakers: [1.0, 0.0],
+    }));
+
+    // The first context must still work after the second prepare() call —
+    // it was never cleared, because there is no shared cache to clear.
+    expect(hasEmbedding(contextAB, a)).toBe(true);
+    expect(hasEmbedding(contextAB, b)).toBe(true);
+    expect(() => score(a, b, q, contextAB)).not.toThrow();
+    expect(hasEmbedding(contextC, c)).toBe(true);
+    expect(hasEmbedding(contextAB, c)).toBe(false); // c was never in contextAB
+  });
+
+  // Regression: a thrown getOrComputeEmbeddings (provider outage, DB error)
+  // used to abort prepare() entirely, which aborted the whole matching pass
+  // for every applicant. It must now degrade to an empty-ish context.
+  it("does not throw when getOrComputeEmbeddings rejects — degrades to no embeddings available", async () => {
+    const a = makeApplicant(FULL_ANSWERS);
+    const b = makeApplicant(FULL_ANSWERS);
+
+    (getOrComputeEmbeddings as ReturnType<typeof mock>).mockRejectedValueOnce(
+      new Error("provider unavailable")
+    );
+
+    const context = await prepare([a, b], q);
+    expect(hasEmbedding(context, a)).toBe(false);
+    expect(hasEmbedding(context, b)).toBe(false);
   });
 });

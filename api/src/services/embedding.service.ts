@@ -162,46 +162,73 @@ export async function getOrComputeEmbeddings(
       `(model: ${provider.model}, textVersion: ${CURRENT_TEXT_VERSION})...`
     );
 
-    const staleTexts = stale.map((a) => buildTexts(a.answers));
-    const profileTexts     = staleTexts.map((t) => t.profile);
-    const preferenceTexts  = staleTexts.map((t) => t.preference);
-    const dealBreakerTexts = staleTexts.map((t) => t.dealBreakers);
+    // Never let one bad applicant's text (a provider rate limit, content-
+    // policy rejection, or timeout) abort matching for every applicant in
+    // this batch — including the majority whose embeddings were already
+    // cached and didn't need this call at all. On failure, the stale
+    // applicants simply stay absent from the returned map (and stay marked
+    // stale in the DB), so the next matching run retries them automatically
+    // once the provider recovers.
+    try {
+      const staleTexts = stale.map((a) => buildTexts(a.answers));
+      const profileTexts     = staleTexts.map((t) => t.profile);
+      const preferenceTexts  = staleTexts.map((t) => t.preference);
+      const dealBreakerTexts = staleTexts.map((t) => t.dealBreakers);
 
-    const [profileEmbs, preferenceEmbs, dealBreakerEmbs] = await Promise.all([
-      provider.embedBatch(profileTexts),
-      provider.embedBatch(preferenceTexts),
-      provider.embedBatch(dealBreakerTexts),
-    ]);
+      const [profileEmbs, preferenceEmbs, dealBreakerEmbs] = await Promise.all([
+        provider.embedBatch(profileTexts),
+        provider.embedBatch(preferenceTexts),
+        provider.embedBatch(dealBreakerTexts),
+      ]);
 
-    await Promise.all(
-      stale.map(async (applicant, i) => {
-        const vectors = {
-          profile:      profileEmbs[i],
-          preference:   preferenceEmbs[i],
-          dealBreakers: dealBreakerEmbs[i],
-        };
+      const saved = await Promise.all(
+        stale.map(async (applicant, i) => {
+          const vectors = {
+            profile:      profileEmbs[i],
+            preference:   preferenceEmbs[i],
+            dealBreakers: dealBreakerEmbs[i],
+          };
 
-        await saveEmbedding(
-          applicant._id,
-          provider.name,
-          provider.model,
-          vectors
-        );
+          try {
+            await saveEmbedding(applicant._id, provider.name, provider.model, vectors);
+          } catch (err) {
+            console.error(
+              `[embedding] Failed to persist embedding for applicant ${applicant._id.toHexString()} — ` +
+              `skipping it this round:`,
+              err
+            );
+            return null;
+          }
 
-        const doc: EmbeddingDoc = {
-          _id: new ObjectId(),
-          applicantId: applicant._id,
-          provider: provider.name,
-          model: provider.model,
-          textVersion: CURRENT_TEXT_VERSION,
-          ...vectors,
-          createdAt: new Date(),
-        };
-        storedByApplicant.set(applicant._id.toHexString(), doc);
-      })
-    );
+          const doc: EmbeddingDoc = {
+            _id: new ObjectId(),
+            applicantId: applicant._id,
+            provider: provider.name,
+            model: provider.model,
+            textVersion: CURRENT_TEXT_VERSION,
+            ...vectors,
+            createdAt: new Date(),
+          };
+          return doc;
+        })
+      );
 
-    console.log(`[embedding] Done. ${stale.length} embeddings saved.`);
+      for (const doc of saved) {
+        if (doc) storedByApplicant.set(doc.applicantId.toHexString(), doc);
+      }
+
+      const failedCount = saved.filter((doc) => doc === null).length;
+      console.log(
+        `[embedding] Done. ${stale.length - failedCount}/${stale.length} embeddings saved` +
+        (failedCount > 0 ? ` (${failedCount} failed, will retry next run).` : ".")
+      );
+    } catch (err) {
+      console.error(
+        `[embedding] Failed to compute ${stale.length} missing/stale embeddings — ` +
+        `degrading to skip them this round (they remain stale and will be retried next run):`,
+        err
+      );
+    }
   }
 
   return storedByApplicant;

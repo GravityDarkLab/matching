@@ -9,7 +9,7 @@ import { isOrientationCompatible } from "./filters/orientation.filter.js";
 import { isAgeCompatible } from "./filters/age.filter.js";
 import { isReligionCompatible } from "./filters/religion.filter.js";
 import { isLongDistanceCompatible } from "./filters/location.filter.js";
-import { prepare, score } from "./scorer.js";
+import { prepare, score, hasEmbedding } from "./scorer.js";
 import { rerankCandidates } from "../services/match-rerank.service.js";
 
 export interface MatchScore {
@@ -151,11 +151,16 @@ export async function getCandidates(
   const eligible = others.filter((o) => !activeContactIds.has(o._id.toHexString()));
   const compatible = applyFilters(target, eligible);
 
-  await prepare([target, ...compatible], questionnaire);
+  const context = await prepare([target, ...compatible], questionnaire);
+  if (!hasEmbedding(context, target)) {
+    // Target's own embedding failed to compute this round — nothing to score against.
+    return [];
+  }
+  const scorable = compatible.filter((other) => hasEmbedding(context, other));
 
-  const embeddingRanked: EmbeddingRanked[] = compatible
+  const embeddingRanked: EmbeddingRanked[] = scorable
     .map((other) => {
-      const result = score(target, other, questionnaire);
+      const result = score(target, other, questionnaire, context);
       return {
         alias:       other.alias,
         applicantId: other._id.toHexString(),
@@ -165,7 +170,7 @@ export async function getCandidates(
     })
     .sort((a, b) => b.score - a.score);
 
-  const docsById = new Map(compatible.map((d) => [d._id.toHexString(), d]));
+  const docsById = new Map(scorable.map((d) => [d._id.toHexString(), d]));
   return applyRerank(target, embeddingRanked, docsById, topN);
 }
 
@@ -201,7 +206,7 @@ export async function runFullMatchingPass(): Promise<Record<string, RankedCandid
     return {};
   }
 
-  await prepare(eligible, questionnaire);
+  const context = await prepare(eligible, questionnaire);
 
   const results: Record<string, RankedCandidate[]> = {};
 
@@ -209,23 +214,42 @@ export async function runFullMatchingPass(): Promise<Record<string, RankedCandid
     const batch = eligible.slice(i, i + RERANK_CONCURRENCY);
     await Promise.all(
       batch.map(async (applicant) => {
-        const others = eligible.filter((o) => !o._id.equals(applicant._id));
-        const compatible = applyFilters(applicant, others);
+        // Never let one applicant's failure (missing embedding, an
+        // unexpected rerank error, anything else) abort its whole
+        // concurrency batch — degrade that applicant to no candidates
+        // this round instead.
+        try {
+          if (!hasEmbedding(context, applicant)) {
+            results[applicant._id.toHexString()] = [];
+            return;
+          }
 
-        const embeddingRanked: EmbeddingRanked[] = compatible
-          .map((other) => {
-            const result = score(applicant, other, questionnaire);
-            return {
-              alias:       other.alias,
-              applicantId: other._id.toHexString(),
-              score:       result.score,
-              breakdown:   result.breakdown,
-            };
-          })
-          .sort((a, b) => b.score - a.score);
+          const others = eligible.filter((o) => !o._id.equals(applicant._id));
+          const compatible = applyFilters(applicant, others)
+            .filter((other) => hasEmbedding(context, other));
 
-        const docsById = new Map(compatible.map((d) => [d._id.toHexString(), d]));
-        results[applicant._id.toHexString()] = await applyRerank(applicant, embeddingRanked, docsById, 10);
+          const embeddingRanked: EmbeddingRanked[] = compatible
+            .map((other) => {
+              const result = score(applicant, other, questionnaire, context);
+              return {
+                alias:       other.alias,
+                applicantId: other._id.toHexString(),
+                score:       result.score,
+                breakdown:   result.breakdown,
+              };
+            })
+            .sort((a, b) => b.score - a.score);
+
+          const docsById = new Map(compatible.map((d) => [d._id.toHexString(), d]));
+          results[applicant._id.toHexString()] = await applyRerank(applicant, embeddingRanked, docsById, 10);
+        } catch (err) {
+          console.error(
+            `[engine] Scoring failed for applicant ${applicant._id.toHexString()}, ` +
+            `degrading to no candidates this round:`,
+            err
+          );
+          results[applicant._id.toHexString()] = [];
+        }
       }),
     );
   }

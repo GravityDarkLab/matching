@@ -35,6 +35,11 @@
  * applicants in O(N) API calls so score() can run synchronously from cache.
  * Without prepare(): N² × 4 text fields = thousands of API calls.
  * With prepare(): N × 4 text fields (3 batched requests per field set).
+ *
+ * prepare() returns its own cache rather than mutating shared module state —
+ * a full matching pass and a candidate-detail lookup can run concurrently
+ * (e.g. two admins in different tabs) without one call's cache.clear()
+ * corrupting the other's in-flight scoring.
  */
 
 import type { ApplicantDoc } from "../models/applicant.model.js";
@@ -48,8 +53,7 @@ import { ageModifier } from "./filters/age.filter.js";
 
 // ─── Per-applicant embedding cache ───────────────────────────────────────────
 //
-// Populated by prepare() before scoring begins.
-// Keyed by applicant ObjectId hex string.
+// One instance per prepare() call — see the module docstring above.
 
 interface CachedEmbeddings {
   profile: number[];      // lifestyle + vibe_words + work
@@ -57,30 +61,45 @@ interface CachedEmbeddings {
   dealBreakers: number[]; // deal_breakers
 }
 
-const cache = new Map<string, CachedEmbeddings>();
+export interface ScoreContext {
+  cache: Map<string, CachedEmbeddings>;
+}
 
 // ─── Prepare step ─────────────────────────────────────────────────────────────
 
 /**
- * Called once by the engine before any pairwise scoring.
+ * Called once by the engine before any pairwise scoring, and returns the
+ * context that scoring call must pass to score()/hasEmbedding().
  *
  * Loads pre-computed embeddings from the DB (written at form submission time).
  * Only calls the embedding API for applicants whose embeddings are missing or
  * stale (model or text-version changed). In steady state: zero API calls.
+ *
+ * Never throws: getOrComputeEmbeddings() degrades internally on a provider
+ * failure, and this is a second line of defense against any other unexpected
+ * error — an applicant missing from the returned context is treated by
+ * hasEmbedding()/callers as "not scorable this round", not as a reason to
+ * abort matching for every other applicant.
  */
 export async function prepare(
   applicants: ApplicantDoc[],
   _questionnaire: QuestionnaireDoc
-): Promise<void> {
-  cache.clear();
-
+): Promise<ScoreContext> {
   const provider = getEmbeddingProvider();
   console.log(
     `[scorer] Loading embeddings for ${applicants.length} applicants ` +
     `(provider: ${provider.name}, model: ${provider.model})...`
   );
 
-  const stored = await getOrComputeEmbeddings(applicants);
+  const cache = new Map<string, CachedEmbeddings>();
+
+  let stored: Awaited<ReturnType<typeof getOrComputeEmbeddings>>;
+  try {
+    stored = await getOrComputeEmbeddings(applicants);
+  } catch (err) {
+    console.error("[scorer] getOrComputeEmbeddings failed — proceeding with an empty cache:", err);
+    return { cache };
+  }
 
   for (const applicant of applicants) {
     const emb = stored.get(applicant._id.toHexString());
@@ -94,25 +113,33 @@ export async function prepare(
   }
 
   console.log(`[scorer] Ready — ${cache.size}/${applicants.length} embeddings loaded.`);
+  return { cache };
+}
+
+/** Whether `applicant` has a usable embedding in `context` — check before score(). */
+export function hasEmbedding(context: ScoreContext, applicant: ApplicantDoc): boolean {
+  return context.cache.has(applicant._id.toHexString());
 }
 
 // ─── Score ────────────────────────────────────────────────────────────────────
 
 /**
- * Scores applicant pair (a, b). prepare() must have been called first.
+ * Scores applicant pair (a, b). Both must have an embedding in `context`
+ * (check with hasEmbedding() first) — `context` comes from prepare().
  */
 export function score(
   a: ApplicantDoc,
   b: ApplicantDoc,
-  _questionnaire: QuestionnaireDoc
+  _questionnaire: QuestionnaireDoc,
+  context: ScoreContext
 ): MatchScore {
-  const embA = cache.get(a._id.toHexString());
-  const embB = cache.get(b._id.toHexString());
+  const embA = context.cache.get(a._id.toHexString());
+  const embB = context.cache.get(b._id.toHexString());
 
   if (!embA || !embB) {
     throw new Error(
-      "[scorer] Embeddings not found in cache. " +
-      "The engine must call prepare() before score()."
+      "[scorer] Embeddings not found in context. " +
+      "Call prepare() first and check hasEmbedding() before score()."
     );
   }
 
