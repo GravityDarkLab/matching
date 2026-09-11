@@ -150,6 +150,14 @@ describe("generateChatCompletion", () => {
     expect(await generateChatCompletion("prompt")).toBe("");
   });
 
+  it("returns \"\" when a 2xx body isn't valid JSON (res.json() rejects) instead of throwing", async () => {
+    const errors = quiet("error");
+    stubFetch(new Response("<html>502 Bad Gateway</html>", { status: 200 }));
+
+    expect(await generateChatCompletion("prompt")).toBe("");
+    expect(errors).toHaveBeenCalled();
+  });
+
   it("returns \"\" when the response has no choices", async () => {
     stubFetch(new Response(JSON.stringify({ choices: [] }), { status: 200 }));
     expect(await generateChatCompletion("prompt")).toBe("");

@@ -23,13 +23,18 @@ const fakeMatchesCol = {
   })),
 };
 
-// Mirrors the two query shapes the engine uses: "everyone active" and
-// "everyone active except <id>" (via _id.$ne).
+// Honors the predicates the engine actually queries with — status.$in (the
+// active pool) and _id.$ne / _id — so the eligibility tests fail if the
+// engine ever stops filtering out dating/inactive applicants.
+const matchesStatus = (filter: any, a: ApplicantDoc) =>
+  !filter.status?.$in || filter.status.$in.includes(a.status);
 const fakeApplicantsCol = {
   find: mock((filter: any) => ({
-    toArray: async () => pool.filter((a) => !filter._id?.$ne || !a._id.equals(filter._id.$ne)),
+    toArray: async () =>
+      pool.filter((a) => matchesStatus(filter, a) && (!filter._id?.$ne || !a._id.equals(filter._id.$ne))),
   })),
-  findOne: mock(async (filter: any) => pool.find((a) => a._id.equals(filter._id)) ?? null),
+  findOne: mock(async (filter: any) =>
+    pool.find((a) => a._id.equals(filter._id) && matchesStatus(filter, a)) ?? null),
 };
 
 mock.module("../../../db/connection.js", () => ({
@@ -173,8 +178,30 @@ describe("getCandidates", () => {
     await expect(getCandidates("not-an-object-id")).rejects.toMatchObject({ statusCode: 400 });
   });
 
-  it("throws 404 when the target isn't an active applicant", async () => {
+  it("throws 404 when the target doesn't exist", async () => {
     await expect(getCandidates(new ObjectId().toHexString())).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it.each(["dating", "inactive"] as const)("throws 404 when the target exists but is %s", async (status) => {
+    const target = { ...applicant("Target"), status };
+    pool = [target, applicant("Other")];
+    embedded = new Set(["Target", "Other"]);
+
+    await expect(getCandidates(target._id.toHexString())).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("offers only applied/matched applicants as candidates", async () => {
+    const target = applicant("Target");
+    pool = [
+      target,
+      applicant("Applied"),
+      { ...applicant("Matched"), status: "matched" },
+      { ...applicant("Dating"), status: "dating" },
+      { ...applicant("Inactive"), status: "inactive" },
+    ];
+    embedded = new Set(pool.map((p) => p.alias));
+
+    expect(aliases(await getCandidates(target._id.toHexString())).sort()).toEqual(["Applied", "Matched"]);
   });
 
   it("ranks scorable candidates by score, descending, and carries rerank reasoning", async () => {
@@ -309,6 +336,20 @@ describe("runFullMatchingPass", () => {
 
     expect(Object.keys(results).sort()).toEqual([a, b, c].map((x) => x._id.toHexString()).sort());
     expect(aliases(results[a._id.toHexString()]).sort()).toEqual(["B", "C"]);
+  });
+
+  it("includes only applied/matched applicants in the pass", async () => {
+    const a = applicant("A");
+    const dating = { ...applicant("Dating"), status: "dating" as const };
+    const inactive = { ...applicant("Inactive"), status: "inactive" as const };
+    pool = [a, { ...applicant("M"), status: "matched" }, dating, inactive];
+    embedded = new Set(pool.map((p) => p.alias));
+
+    const results = await runFullMatchingPass();
+
+    expect(results[dating._id.toHexString()]).toBeUndefined();
+    expect(results[inactive._id.toHexString()]).toBeUndefined();
+    expect(aliases(results[a._id.toHexString()])).toEqual(["M"]);
   });
 
   it("leaves applicants in an active contact out of the pass entirely", async () => {
