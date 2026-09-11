@@ -62,4 +62,25 @@ describe("isLongDistanceCompatible", () => {
     const b = makeApplicant("Paris, France", false);
     expect(isLongDistanceCompatible(a, b)).toBe(true);
   });
+
+  // Regression: the location field is a free-text Autocomplete (suggestions,
+  // not enforced choices — see frontend/src/steps/Step1Identity.tsx), so two
+  // people in the same city can easily type it differently.
+  it("treats 'Tunis' and 'Tunis, Tunisia' as the same city (city-name-only match)", () => {
+    const a = makeApplicant("Tunis", false);
+    const b = makeApplicant("Tunis, Tunisia", false);
+    expect(isLongDistanceCompatible(a, b)).toBe(true);
+  });
+
+  it("still fails for genuinely different cities even when one omits the country", () => {
+    const a = makeApplicant("Tunis", false);
+    const b = makeApplicant("Sfax, Tunisia", false);
+    expect(isLongDistanceCompatible(a, b)).toBe(false);
+  });
+
+  it("matches the city part case-insensitively regardless of country formatting", () => {
+    const a = makeApplicant("TUNIS", false);
+    const b = makeApplicant("tunis, tunisia", false);
+    expect(isLongDistanceCompatible(a, b)).toBe(true);
+  });
 });
