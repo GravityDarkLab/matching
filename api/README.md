@@ -31,9 +31,7 @@ cp api/.env.example api/.env
 | `ADMIN_USERNAME` | Admin login username | — |
 | `ADMIN_PASSWORD` | Admin login password | — |
 | `FORM_SECRET` | HMAC secret for submission keys | `openssl rand -hex 32` |
-| `EMBEDDING_PROVIDER` | `openai` or `local` | — |
-| `EMBEDDING_MODEL` | Model name (e.g. `text-embedding-3-small`) | — |
-| `EMBEDDING_BASE_URL` | Base URL for local provider | — |
+| `OPENAI_API_KEY` | OpenAI API key — matching always calls OpenAI (embeddings, rerank, match summaries, ice-breakers) | — |
 
 ### Optional variables
 
@@ -43,9 +41,12 @@ cp api/.env.example api/.env
 | `PORT` | `3001` | Server port |
 | `NODE_ENV` | `development` | Environment |
 | `ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:5173` | CORS origins |
-| `JWT_EXPIRY` | `8h` | JWT token lifetime |
+| `TRUST_PROXY` | `false` | Set `true` only behind a trusted reverse proxy that overwrites `X-Forwarded-For` — enables proxy headers as the client IP for rate limiting and audit logs; otherwise headers are ignored (spoofable) |
+| `ADMIN_JWT_EXPIRY` | `8h` | Admin session JWT lifetime |
+| `APPLICANT_JWT_EXPIRY` | `30d` | Applicant portal session JWT lifetime |
 | `PUBLIC_URL` | _(empty)_ | Base URL for startup logs |
-| `OPENAI_API_KEY` | _(empty)_ | Required when `EMBEDDING_PROVIDER=openai` |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model (or `text-embedding-3-large`) |
+| `OPENAI_CHAT_MODEL` | `gpt-4o-mini` | Chat model for ice-breakers/match-summaries/match-rerank (e.g. `gpt-5.4-mini`) |
 
 ---
 
@@ -78,6 +79,20 @@ bun run --cwd .. seed:applicants -- --count 50 --clear
 
 ---
 
+## Evaluating the matching score
+
+`bun run eval:rerank` (from the monorepo root) runs one full matching pass and prints embedding-vs-LLM score distributions side by side — no need to disable the rerank stage to compare, since every candidate already carries both numbers. Requires a seeded applicant pool and `OPENAI_API_KEY` set (real embedding + LLM calls, not mocked):
+
+```bash
+bun run eval:rerank                  # api/.env.dev
+bun run eval:rerank --env=test
+bun run eval:rerank --csv=out.csv    # also write every candidate row to CSV
+```
+
+See ["7. Evaluation"](../docs/llm-listwise-rerank-matching-score.md#7-evaluation) in the design writeup for what this is meant to validate.
+
+---
+
 ## API reference
 
 ### Public
@@ -107,7 +122,7 @@ curl -X POST http://localhost:3001/api/v1/admin/login \
 | `GET` | `/api/v1/admin/me` | Current admin session info |
 | `GET` | `/api/v1/admin/applicants` | List applicants (paginated, filterable) |
 | `GET` | `/api/v1/admin/applicants/:id` | Get applicant profile |
-| `GET` | `/api/v1/admin/applicants/:id/identity` | Decrypt & return Instagram handle ⚠ audit logged, `super_admin` only |
+| `GET` | `/api/v1/admin/applicants/:id/identity` | Decrypt & return Instagram handle + full name ⚠ audit logged, `super_admin` only |
 | `DELETE` | `/api/v1/admin/applicants/:id` | Deactivate applicant |
 | `POST` | `/api/v1/admin/applicants/:id/regenerate-magic-link` | Issue a new portal magic link, `super_admin` only |
 | `GET` | `/api/v1/admin/audit-logs` | View audit trail |
@@ -124,8 +139,8 @@ curl -X POST http://localhost:3001/api/v1/admin/login \
 | `GET` | `/api/v1/matching/last-run` | Summary of the most recent matching pass |
 | `POST` | `/api/v1/matching/run` | Full pairwise pass over all active applicants |
 
-Both `candidates` and `run` accept an `algorithm` parameter: `baseline`, `cosine`, or `embedding-cosine`.  
-See [`src/matching/README.md`](./src/matching/README.md) for algorithm details.
+Candidates are shortlisted with the `embedding-cosine` algorithm (semantic text embeddings + age filter), then the shortlist is rescored by an LLM listwise rerank call — that's the score actually returned and displayed. No `algorithm` parameter is accepted.  
+See [`src/matching/README.md`](./src/matching/README.md) for pipeline details.
 
 ### Applicant portal (session cookie)
 
@@ -141,10 +156,11 @@ Applicants log in with a magic link (issued by an admin) and, on first login, se
 | `GET` | `/api/v1/profile/answers` | Get my questionnaire answers |
 | `PUT` | `/api/v1/profile/answers` | Edit my questionnaire answers |
 | `GET` | `/api/v1/profile/matches` | List my matches with score breakdown |
-| `POST` | `/api/v1/profile/matches/:id/contact` | Request to exchange Instagram handles with a match ⚠ audit logged on acceptance |
-| `POST` | `/api/v1/profile/matches/:id/respond` | Accept or decline a contact request |
+| `POST` | `/api/v1/profile/matches/:id/contact` | Initiate contact with a match — returns ice-breakers and date ideas; no identity revealed yet |
+| `POST` | `/api/v1/profile/matches/:id/respond` | Accept or decline a contact request — accepting reveals the initiator's handle + name immediately in the response |
 | `POST` | `/api/v1/profile/matches/:id/withdraw` | Withdraw a contact request |
-| `POST` | `/api/v1/profile/matches/:id/outcome` | Report a match outcome (`success` / `failed`) |
+| `POST` | `/api/v1/profile/matches/:id/outcome` | Report a match outcome (`success` / `failed`). Time-gated: `failed` unlocks 3 days after `dating`, `success` after 7. Optional `outcomeFeedback` (tags + note) and a `continuation` (`continue`/`break`) choice on `failed` |
+| `POST` | `/api/v1/profile/matches/:id/nudge-ack` | Dismiss the distance-preference nudge surfaced after a `failed` outcome tagged `too_far`; optionally opens the applicant to long-distance matches |
 | `POST` | `/api/v1/profile/change-password` | Change my password |
 | `POST` | `/api/v1/profile/deactivate` | Deactivate my account |
 | `POST` | `/api/v1/profile/cancel-deletion` | Cancel a pending account deletion |
@@ -179,10 +195,11 @@ api/
 
 ## Privacy & security
 
-- **No PII in applicant profiles** — Instagram handles are AES-256-GCM encrypted in a separate `identities` collection.
+- **No PII in applicant profiles** — Instagram handles and first/last names are AES-256-GCM encrypted in a separate `identities` collection, each field with its own fresh IV (never reusing another field's IV, even within the same document).
 - **Submission keys** — HMAC-SHA256(version, `FORM_SECRET`) prevents questionnaire version enumeration.
-- **Audit logs** — every identity decryption (admin lookup *or* mutual match reveal) is written to `audit_logs` with actor, IP, user-agent, and timestamp before plaintext is returned.
-- **Mutual identity reveal** — an applicant calling `/profile/matches/:id/contact` immediately decrypts and is shown the partner's Instagram handle; the partner sees the initiator's handle as soon as they view that match (`GET /profile/matches`), before accepting or declining.
+- **Audit logs** — every identity decryption of *someone else's* data (admin lookup or mutual match reveal) is written to `audit_logs` with actor, IP, user-agent, and timestamp before plaintext is returned. Viewing your own name on your own profile is not audit-logged — it isn't a privacy-sensitive reveal.
+- **Mutual identity reveal** — Instagram handles and full names are only decrypted when the target explicitly accepts a contact request (`POST /profile/matches/:id/respond` with `accept: true`). At that point both parties' handles/names are decrypted simultaneously, each reveal is audit-logged independently, and both parties see them on their next `GET /profile/matches` call (the response to `/respond` itself already includes the initiator's handle/name for the responding applicant). A declined or withdrawn request leaves identities sealed.
+- **Outcome gating** — once a match is `dating`, `POST /profile/matches/:id/outcome` enforces a minimum wait: 3 days before `failed` can be reported, 7 before `success` — encourages giving a match a real chance before either applicant can end it.
 - **Rate limiting** — in-memory sliding-window limiter on all public, admin, and applicant-portal routes.
 - **Orientation filter** — incompatible pairs are excluded *before* scoring, never just ranked low.
 - **Account deletion** — applicants can deactivate immediately or schedule a deletion with a cancellable grace period.

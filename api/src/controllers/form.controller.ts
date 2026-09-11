@@ -3,6 +3,7 @@ import { processFormSubmission } from "../services/form.service.js";
 import { getActiveQuestionnaire, getAllQuestionnaires } from "../services/questionnaire.service.js";
 import { generateSubmissionKey } from "../privacy/submission-key.js";
 import { errorResponse } from "../utils/error-response.js";
+import { getClientIp } from "../utils/request-meta.js";
 import type { ValidatedContext } from "../utils/validated-context.js";
 import type { FormSubmissionInput } from "../validators/form.validator.js";
 
@@ -62,9 +63,10 @@ export async function getQuestionnaire(c: Context): Promise<Response> {
 export async function submitForm(c: ValidatedContext<{ json: FormSubmissionInput }>): Promise<Response> {
   const body = c.req.valid("json");
   const submissionKey = c.req.header("X-Submission-Key") ?? "";
+  const ipAddress = getClientIp(c);
 
   try {
-    const result = await processFormSubmission(body, submissionKey);
+    const result = await processFormSubmission(body, submissionKey, ipAddress);
 
     return c.json(
       {

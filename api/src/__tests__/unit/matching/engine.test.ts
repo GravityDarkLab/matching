@@ -33,6 +33,7 @@ mock.module("../../../db/collections.js", () => ({
   getEmbeddingsCollection:     () => ({}),
   getAdminsCollection:         () => ({}),
   getAppConfigCollection:      () => ({}),
+  getMatchReranksCollection:   () => ({}),
   ensureIndexes:               async () => {},
 }));
 

@@ -21,16 +21,18 @@ import { RELIGIONS } from '../../data/religions'
 import Step3Vibe from '../../steps/Step3Vibe'
 import Step4Preferences from '../../steps/Step4Preferences'
 
-// Locked answers never sent back to the API: instagram_handle and
-// disclaimer_agreed exist only to satisfy the shared formSchema, while
-// birth_date and gender_identity are loaded for display but only an
-// admin may change them
+// Locked answers never sent back to the API: first_name, last_name,
+// instagram_handle and disclaimer_agreed exist only to satisfy the shared
+// formSchema, while birth_date and gender_identity are loaded for display
+// but only an admin may change them
 const LOCKED_DEFAULTS = {
+  first_name: 'locked',
+  last_name: 'locked',
   instagram_handle: 'locked',
   disclaimer_agreed: true as const,
 }
 
-const LOCKED_ANSWER_KEYS = ['instagram_handle', 'disclaimer_agreed', 'birth_date', 'gender_identity'] as const
+const LOCKED_ANSWER_KEYS = ['first_name', 'last_name', 'instagram_handle', 'disclaimer_agreed', 'birth_date', 'gender_identity'] as const
 
 // Mirrors Step2's radio options — values stay in English for the matching engine
 const orientationOptions = [

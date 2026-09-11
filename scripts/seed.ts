@@ -10,6 +10,7 @@
  *   bun run seed both                              → seed questionnaire + applicants (dev)
  *   bun run seed applicants --env=test             → use api/.env.test
  *   bun run seed applicants --env=dev --count=100 --clear
+ *   bun run seed both --clean                      → wipe ALL data (questionnaires + applicants + matches) then re-seed
  */
 
 import * as readline from "readline";
@@ -37,7 +38,9 @@ const flags    = rawArgs.filter((a) => a.startsWith("--"));
 const positional = rawArgs.filter((a) => !a.startsWith("--"));
 
 const envFlag = flags.find((f) => f.startsWith("--env="))?.split("=")[1];
-const extraFlags = flags.filter((f) => !f.startsWith("--env="));
+// --clean: wipe questionnaires + applicants/identities/matches, then re-seed everything fresh
+const CLEAN = flags.includes("--clean");
+const extraFlags = flags.filter((f) => !f.startsWith("--env=") && f !== "--clean");
 
 // ─── Prompt helpers ───────────────────────────────────────────────────────────
 
@@ -139,13 +142,20 @@ async function main() {
   }
 
   if (target === "both") {
-    await run(SEED_SCRIPTS.questionnaire, env!);
-    await run(SEED_SCRIPTS.applicants,    env!, extraFlags);
+    const qFlags = CLEAN ? ["--clean"] : [];
+    const aFlags = [...extraFlags, ...(CLEAN ? ["--clear"] : [])];
+    await run(SEED_SCRIPTS.questionnaire, env!, qFlags);
+    await run(SEED_SCRIPTS.applicants,    env!, aFlags);
   } else if (target === "admin") {
     // admin seed is interactive; env defaults to dev if not specified
     await run(SEED_SCRIPTS.admin, env ?? "dev");
   } else {
-    const extra = target === "applicants" ? extraFlags : [];
+    let extra: string[] = [];
+    if (target === "applicants") {
+      extra = [...extraFlags, ...(CLEAN ? ["--clear"] : [])];
+    } else if (target === "questionnaire") {
+      extra = CLEAN ? ["--clean"] : [];
+    }
     await run(SEED_SCRIPTS[target], env!, extra);
   }
 

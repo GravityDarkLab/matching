@@ -15,6 +15,7 @@ export interface ApplicantDoc {
   magicToken: string;       // 64-char hex, used in ?token= URL
   passwordHash: string | null; // null until first login; bcrypt hash after set-password
   scoreThreshold: number;   // minimum match score to show (0.6–1.0, default 0.8)
+  submissionIp?: string;
   deletionScheduledAt?: Date;
   createdAt: Date;
   updatedAt: Date;

@@ -85,20 +85,20 @@ The `/apply` page is a wizard that walks the user through the questionnaire:
 
 | Step | Component | What it collects |
 |---|---|---|
-| 1 | `Step1Identity.tsx` | Instagram handle, location |
+| 1 | `Step1Identity.tsx` | First name, last name, Instagram handle, location |
 | 2 | `Step2AboutYou.tsx` | Birth date, height, work, gender identity, sexual orientation, religion |
 | 3 | `Step3Vibe.tsx` | Vibe words, lifestyle description |
-| 4 | `Step4Preferences.tsx` | Relationship type, long-distance openness, preferred traits, deal breakers |
+| 4 | `Step4Preferences.tsx` | Relationship type, long-distance openness, age gap preference (max gap + open to older/younger, shown conditionally), preferred traits, deal breakers |
 | 5 | `Step5Final.tsx` | Physical affection importance, dream first date, disclaimer agreement |
 
 The questionnaire schema is fetched dynamically from `GET /api/v1/form/questionnaire` so the form always reflects the latest active version. The `X-Submission-Key` returned by that endpoint is sent as a header with `POST /api/v1/form/submit` to prevent version enumeration.
 
 ### Applicant portal
 
-`/profile/login` accepts a magic link issued by an admin and, on first login, prompts the applicant to set a password. `/profile` (`ProfileDashboard.tsx`) has two tabs:
+`/profile/login` accepts a magic link issued by an admin and, on first login, prompts the applicant to set a password. The dashboard header and "Hello" greeting show the applicant's own decrypted name (falling back to their alias if none is on record). `/profile` (`ProfileDashboard.tsx`) has two tabs:
 
-- **Matches** — score breakdown vs. each match, request/accept identity reveal, report an outcome.
-- **Profile** — edit questionnaire answers, change password, theme/language settings, and account deactivation/deletion (`DeletionCountdown.tsx`).
+- **Matches** — score breakdown vs. each match, request/accept identity reveal (handle + name once `dating`). Once dating, `MatchCard` walks through a time-gated check-in flow instead of immediate outcome buttons: a rotating friendly check-in message for the first 3 days, then a quiet "things aren't working out?" link, then full outcome buttons after 7 days. Reporting `success` shows a celebratory animation; reporting `failed` shows an optional feedback-tags step, an encouraging animation, and a choice to keep looking or take a break. A `DistanceNudgeCard` may appear on the dashboard afterward if "we live too far apart" was tagged.
+- **Profile** — edit questionnaire answers, change password, theme/language settings, and account deactivation/deletion (`DeletionCountdown.tsx`, written with a "take your time, come back whenever" tone rather than a stark countdown).
 
 ### Internationalization
 

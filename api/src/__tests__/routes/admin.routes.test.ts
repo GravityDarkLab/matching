@@ -52,7 +52,10 @@ mock.module("../../middleware/audit.middleware.js", () => ({
 }));
 
 import { Hono } from "hono";
-import { adminRoutes } from "../../routes/admin.routes.js";
+// Dynamic, not static: static imports evaluate before this file's
+// mock.module() calls run, and a route captures its rate limiter by value
+// at definition time — a static import would bake in the real limiter.
+const { adminRoutes } = await import("../../routes/admin.routes.js");
 import { signAdminToken } from "../../middleware/auth.middleware.js";
 
 // ── Test app ──────────────────────────────────────────────────────────────────
@@ -264,6 +267,7 @@ describe("GET /admin/applicants/:id/identity", () => {
     mockGetApplicantIdent.mockResolvedValue({
       alias: "Blue Falcon",
       instagramHandle: "@real_handle",
+      fullName: "Jane Doe",
     });
     const token = await superAdminToken();
     const res = await get("/admin/applicants/64b1234567890abcdef01234/identity", token);
@@ -272,6 +276,7 @@ describe("GET /admin/applicants/:id/identity", () => {
     expect(body.success).toBe(true);
     expect(body.data.instagramHandle).toBe("@real_handle");
     expect(body.data.alias).toBe("Blue Falcon");
+    expect(body.data.fullName).toBe("Jane Doe");
   });
 
   it("returns 404 when identity is not found (super_admin)", async () => {

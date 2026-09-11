@@ -12,8 +12,8 @@
     "start": "bun --env-file=.env      run         src/server.ts",
     "seed": "bun run src/seeds/questionnaire.seed.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test --preload ./src/__tests__/setup.ts ./src/__tests__",
-    "test:watch": "bun test --watch --preload ./src/__tests__/setup.ts ./src/__tests__"
+    "test": "bun test --isolate --preload ./src/__tests__/setup.ts ./src/__tests__",
+    "test:watch": "bun test --isolate --watch --preload ./src/__tests__/setup.ts ./src/__tests__"
   },
   "dependencies": {
     "@hono/swagger-ui": "^0.6.1",

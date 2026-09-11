@@ -9,14 +9,15 @@ import type { AuditAction } from "../models/auditLog.model.js";
 export async function storeIdentity(
   applicantId: ObjectId,
   alias: string,
-  instagramHandle: string
+  instagramHandle: string,
+  fullName?: string,
 ): Promise<void> {
   const db = await getDb();
   const identities = getIdentitiesCollection(db);
 
   const { encrypted, iv, tag } = encrypt(instagramHandle);
 
-  await identities.insertOne({
+  const doc: Parameters<typeof identities.insertOne>[0] = {
     _id: new ObjectId(),
     applicantId,
     alias,
@@ -25,7 +26,18 @@ export async function storeIdentity(
     encryptionTag: tag,
     instagramHash: hashInstagram(instagramHandle),
     createdAt: new Date(),
-  });
+  };
+
+  if (fullName) {
+    // A fresh IV per encrypted field, never reusing the handle's — AES-GCM
+    // nonce reuse breaks confidentiality even within the same document.
+    const { encrypted: encName, iv: ivName, tag: tagName } = encrypt(fullName);
+    doc.encryptedFullName = encName;
+    doc.fullNameIv = ivName;
+    doc.fullNameTag = tagName;
+  }
+
+  await identities.insertOne(doc);
 }
 
 export async function checkInstagramExists(handle: string): Promise<boolean> {
@@ -46,6 +58,11 @@ export async function resolveIdentity(alias: string): Promise<string | null> {
   return decrypt(doc.encryptedInstagram, doc.encryptionIv, doc.encryptionTag);
 }
 
+export interface ResolvedIdentity {
+  instagram: string;
+  fullName: string | null;
+}
+
 /**
  * Raw decrypt without an audit log. Only for paths where the reveal has
  * already been logged for this actor (e.g. repeat views of an identity
@@ -54,22 +71,20 @@ export async function resolveIdentity(alias: string): Promise<string | null> {
  */
 export async function resolveIdentityById(
   applicantId: ObjectId
-): Promise<string | null> {
+): Promise<ResolvedIdentity | null> {
   const db = await getDb();
   const identities = getIdentitiesCollection(db);
 
   const doc = await identities.findOne({ applicantId });
   if (!doc) return null;
 
-  return decrypt(doc.encryptedInstagram, doc.encryptionIv, doc.encryptionTag);
-}
+  const instagram = decrypt(doc.encryptedInstagram, doc.encryptionIv, doc.encryptionTag);
+  const fullName =
+    doc.encryptedFullName && doc.fullNameIv && doc.fullNameTag
+      ? decrypt(doc.encryptedFullName, doc.fullNameIv, doc.fullNameTag)
+      : null;
 
-/** Checks whether an identity exists without decrypting it (no audit log needed). */
-export async function identityExistsById(applicantId: ObjectId): Promise<boolean> {
-  const db = await getDb();
-  const identities = getIdentitiesCollection(db);
-  const doc = await identities.findOne({ applicantId }, { projection: { _id: 1 } });
-  return doc !== null;
+  return { instagram, fullName };
 }
 
 export interface IdentityRevealAudit {
@@ -82,16 +97,17 @@ export interface IdentityRevealAudit {
 }
 
 /**
- * Decrypts an applicant's Instagram handle and writes the mandatory audit
- * log entry before the plaintext is returned. This is the canonical way to
- * reveal an identity — call sites must not decrypt and log separately.
+ * Decrypts an applicant's identity (Instagram handle + full name, if on
+ * record) and writes the mandatory audit log entry before the plaintext is
+ * returned. This is the canonical way to reveal an identity — call sites
+ * must not decrypt and log separately.
  */
 export async function revealIdentityById(
   applicantId: ObjectId,
   audit: IdentityRevealAudit
-): Promise<string | null> {
-  const handle = await resolveIdentityById(applicantId);
-  if (!handle) return null;
+): Promise<ResolvedIdentity | null> {
+  const resolved = await resolveIdentityById(applicantId);
+  if (!resolved) return null;
 
   await writeAuditLog(audit.actor, audit.action, {
     targetAlias: audit.targetAlias,
@@ -99,5 +115,5 @@ export async function revealIdentityById(
     metadata: audit.metadata,
   });
 
-  return handle;
+  return resolved;
 }

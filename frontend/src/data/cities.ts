@@ -68,7 +68,7 @@ export const CITIES: readonly string[] = [
   'Kuwait City, Kuwait',
   'Muscat, Oman',
   "Sana'a, Yemen",
-  'Jerusalem, Israel', 'Tel Aviv, Israel', 'Haifa, Israel',
+  'Jerusalem, Palestine', 'Tel Aviv, Palestine', 'Haifa, Palestine', 'Gaza, Palestine',
   'Istanbul, Turkey', 'Ankara, Turkey', 'Izmir, Turkey', 'Antalya, Turkey',
 
   // ── Sub-Saharan Africa ───────────────────────────────────────────────────

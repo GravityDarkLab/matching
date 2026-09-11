@@ -33,7 +33,10 @@ mock.module("../../services/form.service.js", () => ({
 }));
 
 import { Hono } from "hono";
-import { formRoutes } from "../../routes/form.routes.js";
+// Dynamic, not static: static imports evaluate before this file's
+// mock.module() calls run, and a route captures its rate limiter by value
+// at definition time — a static import would bake in the real limiter.
+const { formRoutes } = await import("../../routes/form.routes.js");
 import { generateSubmissionKey } from "../../privacy/submission-key.js";
 import { ObjectId } from "mongodb";
 
@@ -58,6 +61,8 @@ function validBody() {
   return {
     questionnaireVersion: "1.0.0",
     answers: {
+      first_name: "Test",
+      last_name: "User",
       instagram_handle: "@test_user",
       location: "Tunis",
       birth_date: "2000-05-15",
@@ -231,5 +236,108 @@ describe("POST /form/submit", () => {
     expect(res.status).toBe(404);
     const body = await res.json() as any;
     expect(body.error).toMatch(/not found/i);
+  });
+
+  // ── Honeypot (_verify) ────────────────────────────────────────────────────
+
+  it("passes _verify field to the service so the service can reject bots", async () => {
+    const key = generateSubmissionKey("1.0.0");
+    const body = { ...validBody(), _verify: "i-am-a-bot" };
+    await post("/form/submit", body, { "X-Submission-Key": key });
+    // The field must reach the service — service is responsible for enforcement
+    const [receivedBody] = mockProcessFormSubmission.mock.calls[0] as any[];
+    expect(receivedBody._verify).toBe("i-am-a-bot");
+  });
+
+  it("returns 400 when service rejects a filled honeypot", async () => {
+    mockProcessFormSubmission.mockRejectedValue(new AppError("Invalid submission", 400));
+    const key = generateSubmissionKey("1.0.0");
+    const body = { ...validBody(), _verify: "automated-fill" };
+    const res = await post("/form/submit", body, { "X-Submission-Key": key });
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.success).toBe(false);
+  });
+
+  it("accepts a submission when _verify is empty string (real browser always sends empty)", async () => {
+    const key = generateSubmissionKey("1.0.0");
+    const body = { ...validBody(), _verify: "" };
+    const res = await post("/form/submit", body, { "X-Submission-Key": key });
+    expect(res.status).toBe(201);
+  });
+
+  it("does not expose _verify in the success response", async () => {
+    const key = generateSubmissionKey("1.0.0");
+    const res = await post("/form/submit", { ...validBody(), _verify: "" }, { "X-Submission-Key": key });
+    const json = await res.json() as any;
+    expect(json._verify).toBeUndefined();
+  });
+
+  // ── Adversarial input ─────────────────────────────────────────────────────
+
+  it("returns 422 for a completely empty body", async () => {
+    const res = await post("/form/submit", {});
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when the body is a primitive string instead of an object", async () => {
+    const res = await app.request("/form/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify("not-an-object"),
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when physical_affection_importance is out of range (0)", async () => {
+    const bad = { ...validBody(), answers: { ...validBody().answers, physical_affection_importance: 0 } };
+    const res = await post("/form/submit", bad);
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when physical_affection_importance is out of range (11)", async () => {
+    const bad = { ...validBody(), answers: { ...validBody().answers, physical_affection_importance: 11 } };
+    const res = await post("/form/submit", bad);
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when birth_date is in the future", async () => {
+    const future = new Date();
+    future.setUTCFullYear(future.getUTCFullYear() + 1);
+    const bad = { ...validBody(), answers: { ...validBody().answers, birth_date: future.toISOString().slice(0, 10) } };
+    const res = await post("/form/submit", bad);
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when instagram_handle has an @ in the middle (invalid format)", async () => {
+    const bad = { ...validBody(), answers: { ...validBody().answers, instagram_handle: "user@name" } };
+    const res = await post("/form/submit", bad);
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when instagram_handle is just whitespace", async () => {
+    const bad = { ...validBody(), answers: { ...validBody().answers, instagram_handle: "   " } };
+    const res = await post("/form/submit", bad);
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when open_to_long_distance is a string 'true' instead of boolean", async () => {
+    const bad = { ...validBody(), answers: { ...validBody().answers, open_to_long_distance: "true" } };
+    const res = await post("/form/submit", bad);
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when disclaimer_agreed is absent", async () => {
+    const { disclaimer_agreed: _, ...answersWithout } = validBody().answers;
+    const bad = { ...validBody(), answers: answersWithout };
+    const res = await post("/form/submit", bad);
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when X-Submission-Key header is entirely absent", async () => {
+    mockProcessFormSubmission.mockRejectedValue(new AppError("Invalid or missing submission key.", 401));
+    const res = await post("/form/submit", validBody());
+    // Route accepts (key defaults to ""), service rejects
+    expect([401, 422]).toContain(res.status);
   });
 });

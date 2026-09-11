@@ -1,5 +1,12 @@
 import { ObjectId } from "mongodb";
 
+export interface MatchSummary {
+  pros: string[];
+  cons: string[];
+  generatedAt: Date;
+  model: string;
+}
+
 export type MatchStatus =
   | "proposed"     // algorithm suggested; both see each other anonymously
   | "in_progress"  // initiator revealed partner's Instagram; partner notified
@@ -20,6 +27,8 @@ export interface MatchDoc {
   score: number;
   /** Per-dimension scores from the algorithm that produced this match */
   breakdown?: Record<string, number>;
+  /** Grounded explanation from the LLM rerank stage that produced `score` */
+  llmReasoning?: string;
   algorithm: string;
   status: MatchStatus;
   initiatorId?: ObjectId;       // who clicked "I want to contact"
@@ -31,6 +40,19 @@ export interface MatchDoc {
    *  matches page has already been audit-logged — keeps repeat page loads
    *  from writing a new log entry every time. */
   identityViewLoggedFor?: string[];
+  /** Set once, the moment status flips to "dating" — the stable anchor for
+   *  day-3/day-7 outcome gating. Matches that reached "dating" before this
+   *  field existed have none; gating falls back to contactRespondedAt. */
+  datingStartedAt?: Date;
+  /** Optional context captured when an outcome is reported as "failed".
+   *  nudgeAcknowledged tracks whether the one-time distance-preference
+   *  suggestion (shown when "too_far" is tagged) has been shown/dismissed. */
+  outcomeFeedback?: {
+    tags: string[];
+    note?: string;
+    nudgeAcknowledged?: boolean;
+  };
+  summary?: MatchSummary;
   notes?: string;
   createdAt: Date;
   updatedAt: Date;

@@ -1,8 +1,11 @@
 /**
- * Seeds the initial questionnaire v1.0.0 into MongoDB.
+ * Seeds the questionnaire into MongoDB.
  * Run with: bun run src/seeds/questionnaire.seed.ts
  *
- * This script is idempotent — it upserts by version.
+ * Options:
+ *   --clean   drop all existing questionnaires before seeding (full reset)
+ *
+ * This script is idempotent without --clean — it upserts by version.
  */
 
 import { ObjectId } from "mongodb";
@@ -10,8 +13,10 @@ import { getDb, closeDb } from "../db/connection.js";
 import { getQuestionnairesCollection } from "../db/collections.js";
 import type { QuestionnaireDoc } from "../models/questionnaire.model.js";
 
+const CLEAN = process.argv.includes("--clean");
+
 const questionnaire: Omit<QuestionnaireDoc, "_id" | "createdAt" | "updatedAt"> = {
-  version: "1.0.0",
+  version: "1.2.0",
   name: "Matching Form v1",
   isActive: true,
   sections: [
@@ -21,12 +26,30 @@ const questionnaire: Omit<QuestionnaireDoc, "_id" | "createdAt" | "updatedAt"> =
       order: 1,
       questions: [
         {
+          id: "first_name",
+          label: "First name",
+          type: "text",
+          sensitive: true,
+          required: true,
+          order: 1,
+          placeholder: "Your first name",
+        },
+        {
+          id: "last_name",
+          label: "Last name",
+          type: "text",
+          sensitive: true,
+          required: true,
+          order: 2,
+          placeholder: "Your last name",
+        },
+        {
           id: "instagram_handle",
           label: "Instagram Handle",
           type: "text",
           sensitive: true,
           required: true,
-          order: 1,
+          order: 3,
           placeholder: "@yourhandle",
         },
       ],
@@ -165,12 +188,39 @@ const questionnaire: Omit<QuestionnaireDoc, "_id" | "createdAt" | "updatedAt"> =
           order: 2,
         },
         {
+          id: "max_age_gap",
+          label: "Maximum age gap you're comfortable with (years)",
+          type: "number",
+          sensitive: false,
+          required: false,
+          order: 3,
+          min: 0,
+          max: 40,
+          placeholder: "Leave blank for no preference",
+        },
+        {
+          id: "open_to_older",
+          label: "Open to someone older than you?",
+          type: "boolean",
+          sensitive: false,
+          required: false,
+          order: 4,
+        },
+        {
+          id: "open_to_younger",
+          label: "Open to someone younger than you?",
+          type: "boolean",
+          sensitive: false,
+          required: false,
+          order: 5,
+        },
+        {
           id: "preferred_physical_traits",
           label: "Preferred physical traits in a partner",
           type: "textarea",
           sensitive: false,
           required: true,
-          order: 3,
+          order: 6,
           placeholder: "e.g. Athletic, tall",
         },
         {
@@ -179,7 +229,7 @@ const questionnaire: Omit<QuestionnaireDoc, "_id" | "createdAt" | "updatedAt"> =
           type: "textarea",
           sensitive: false,
           required: true,
-          order: 4,
+          order: 7,
           placeholder: "e.g. Ambitious, kind, funny",
         },
         {
@@ -188,7 +238,7 @@ const questionnaire: Omit<QuestionnaireDoc, "_id" | "createdAt" | "updatedAt"> =
           type: "textarea",
           sensitive: false,
           required: true,
-          order: 5,
+          order: 8,
           placeholder: "e.g. Dishonesty, smoking",
         },
         {
@@ -197,7 +247,7 @@ const questionnaire: Omit<QuestionnaireDoc, "_id" | "createdAt" | "updatedAt"> =
           type: "boolean",
           sensitive: false,
           required: true,
-          order: 6,
+          order: 9,
         },
         {
           id: "religion_deal_breaker",
@@ -205,7 +255,7 @@ const questionnaire: Omit<QuestionnaireDoc, "_id" | "createdAt" | "updatedAt"> =
           type: "boolean",
           sensitive: false,
           required: true,
-          order: 7,
+          order: 10,
         },
         {
           id: "physical_affection_importance",
@@ -213,7 +263,7 @@ const questionnaire: Omit<QuestionnaireDoc, "_id" | "createdAt" | "updatedAt"> =
           type: "range",
           sensitive: false,
           required: true,
-          order: 8,
+          order: 11,
           min: 1,
           max: 10,
         },
@@ -223,7 +273,7 @@ const questionnaire: Omit<QuestionnaireDoc, "_id" | "createdAt" | "updatedAt"> =
           type: "textarea",
           sensitive: false,
           required: true,
-          order: 9,
+          order: 12,
           placeholder: "e.g. Coffee at a bookstore, then a walk by the river",
         },
       ],
@@ -249,12 +299,18 @@ const questionnaire: Omit<QuestionnaireDoc, "_id" | "createdAt" | "updatedAt"> =
 
 async function seed() {
   console.log("[SEED] Starting questionnaire seed...");
+  console.log(`[SEED] Clean mode: ${CLEAN}`);
 
   const db = await getDb();
   const col = getQuestionnairesCollection(db);
 
-  // Deactivate all existing questionnaires before inserting the new one
-  await col.updateMany({}, { $set: { isActive: false, updatedAt: new Date() } });
+  if (CLEAN) {
+    const { deletedCount } = await col.deleteMany({});
+    console.log(`[SEED] Deleted ${deletedCount} existing questionnaire(s).`);
+  } else {
+    // Deactivate all existing questionnaires before inserting the new one
+    await col.updateMany({}, { $set: { isActive: false, updatedAt: new Date() } });
+  }
 
   const result = await col.updateOne(
     { version: questionnaire.version },

@@ -24,7 +24,6 @@ export default function MatchList({ matches, onMatchesChange }: Props) {
           ...m,
           status: 'in_progress' as const,
           perspective: 'initiator' as const,
-          targetInstagram: result.targetInstagram,
           iceBreakers: result.iceBreakers,
           dateIdeas: result.dateIdeas,
         })),
@@ -33,11 +32,16 @@ export default function MatchList({ matches, onMatchesChange }: Props) {
   }
 
   async function handleRespond(matchId: string, accept: boolean): Promise<void> {
-    await respondToContact(matchId, accept)
+    const { partnerInstagram, partnerFullName } = await respondToContact(matchId, accept)
     onMatchesChange(
       matches.map(m =>
         m.matchId === matchId
-          ? { ...m, status: accept ? ('dating' as const) : ('declined' as const) }
+          ? {
+              ...m,
+              status: accept ? ('dating' as const) : ('declined' as const),
+              partnerInstagram: partnerInstagram ?? m.partnerInstagram,
+              partnerFullName: partnerFullName ?? m.partnerFullName,
+            }
           : m,
       ),
     )
@@ -50,9 +54,15 @@ export default function MatchList({ matches, onMatchesChange }: Props) {
     onMatchesChange([])
   }
 
-  async function handleOutcome(matchId: string, outcome: 'success' | 'failed'): Promise<void> {
-    await reportOutcome(matchId, outcome)
-    onMatchesChange(matches.map(m => (m.matchId === matchId ? { ...m, status: outcome } : m)))
+  async function handleOutcome(
+    matchId: string,
+    outcome: 'success' | 'failed',
+    options?: { feedback?: { tags: string[]; note?: string }; continuation?: 'continue' | 'break' },
+  ): Promise<void> {
+    await reportOutcome(matchId, outcome, options)
+    // MatchCard renders its own post-outcome celebratory/encouraging view
+    // locally (outcomePhase state) — the match stays in this list until the
+    // next full reload picks up the real terminal status from the server.
   }
 
   if (matches.length === 0) {

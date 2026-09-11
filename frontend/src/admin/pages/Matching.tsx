@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useTranslation, Trans } from 'react-i18next'
+import { useTranslation } from 'react-i18next'
 import { runMatching, fetchMatchingLastRun } from '../api/client'
 import Spinner from '../../components/ui/Spinner'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
@@ -38,13 +38,9 @@ export function Matching() {
 
   const ALGORITHMS = [
     { value: 'embedding-cosine', label: t('admin.matching.embedding'), hint: t('admin.matching.embeddingHint'), recommended: true },
-    { value: 'cosine', label: t('admin.matching.cosine'), hint: t('admin.matching.cosineHint') },
-    { value: 'baseline', label: t('admin.matching.baseline'), hint: t('admin.matching.baselineHint') },
   ]
 
   const selectedAlgorithm = ALGORITHMS.find(a => a.value === algorithm)
-
-  const isNonEmbedding = algorithm !== 'embedding-cosine'
 
   const pulseState: PulseState = loading ? 'running' : result ? 'done' : 'idle'
 
@@ -114,13 +110,13 @@ export function Matching() {
             <span id="matching-algorithm-label" className="text-xs font-medium uppercase tracking-wider text-muted block">
               {t('admin.matching.algorithm')}
             </span>
-            <div role="radiogroup" aria-labelledby="matching-algorithm-label" className="grid gap-2.5 sm:grid-cols-3">
+            <div role="radiogroup" aria-labelledby="matching-algorithm-label" className="flex justify-center">
               {ALGORITHMS.map(a => {
                 const selected = algorithm === a.value
                 return (
                   <label
                     key={a.value}
-                    className={`relative flex flex-col gap-1.5 rounded-xl border p-4 transition-all duration-200
+                    className={`relative flex flex-col gap-1.5 rounded-xl border p-4 transition-all duration-200 w-72
                       ${selected
                         ? 'border-accent bg-accent-light/50 shadow-card'
                         : 'border-border hover:border-accent/50 hover:bg-bg'}
@@ -154,20 +150,6 @@ export function Matching() {
               })}
             </div>
           </div>
-
-          {/* Multilingual warning */}
-          {isNonEmbedding && (
-            <div className="match-fade flex items-start gap-3 rounded-xl bg-error-light border border-error/20 px-4 py-3">
-              <svg className="w-4 h-4 text-error shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                <line x1="12" y1="9" x2="12" y2="13"/>
-                <line x1="12" y1="17" x2="12.01" y2="17"/>
-              </svg>
-              <p className="text-xs text-error leading-relaxed">
-                <Trans i18nKey="admin.matching.multilingualWarning" components={{ bold: <strong /> }} />
-              </p>
-            </div>
-          )}
 
           {/* Error message */}
           {error && <p className="match-fade text-sm text-error" role="alert">{error}</p>}

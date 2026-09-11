@@ -32,8 +32,12 @@ export class DuplicateInstagramError extends AppError {
 
 export async function processFormSubmission(
   input: FormSubmissionInput,
-  submissionKey: string
+  submissionKey: string,
+  ipAddress = "unknown",
 ): Promise<FormSubmissionResult> {
+  // Honeypot — filled only by bots that scrape and submit all form fields
+  if (input._verify) throw new AppError("Invalid submission", 400);
+
   // 1. Load questionnaire
   const questionnaire = await getQuestionnaireByVersion(input.questionnaireVersion);
 
@@ -81,6 +85,9 @@ export async function processFormSubmission(
   }
 
   const instagramHandle = sensitiveAnswers["instagram_handle"] as string;
+  const firstName = sensitiveAnswers["first_name"] as string | undefined;
+  const lastName  = sensitiveAnswers["last_name"] as string | undefined;
+  const fullName  = firstName && lastName ? `${firstName} ${lastName}` : undefined;
 
   // 4. Duplicate detection — O(1) hash lookup, no decryption
   if (await checkInstagramExists(instagramHandle)) {
@@ -113,12 +120,13 @@ export async function processFormSubmission(
     magicToken: hashMagicToken(magicToken), // store hash; raw token returned to user only
     passwordHash: null,
     scoreThreshold: 0.8,
+    submissionIp: ipAddress,
     createdAt: now,
     updatedAt: now,
   });
 
   // 8. Store encrypted identity with hash
-  await storeIdentity(applicantId, alias, instagramHandle);
+  await storeIdentity(applicantId, alias, instagramHandle, fullName);
 
   // 9. Pre-compute embeddings (fire-and-forget)
   embedApplicant(applicantId, publicAnswers).catch((err) =>

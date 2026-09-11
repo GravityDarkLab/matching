@@ -7,6 +7,7 @@ import type { EmbeddingDoc } from "../models/embedding.model.js";
 import type { AdminDoc } from "../models/admin.model.js";
 import type { MatchDoc } from "../models/match.model.js";
 import type { AppConfigDoc } from "../models/appConfig.model.js";
+import type { MatchRerankDoc } from "../models/match-rerank.model.js";
 
 export const COLLECTION_NAMES = {
   questionnaires: "questionnaires",
@@ -17,6 +18,7 @@ export const COLLECTION_NAMES = {
   admins:         "admins",
   matches:        "matches",
   appConfig:      "app_config",
+  matchReranks:   "match_reranks",
 } as const;
 
 export function getQuestionnairesCollection(
@@ -53,19 +55,17 @@ export function getAppConfigCollection(db: Db): Collection<AppConfigDoc> {
   return db.collection<AppConfigDoc>(COLLECTION_NAMES.appConfig);
 }
 
+export function getMatchReranksCollection(db: Db): Collection<MatchRerankDoc> {
+  return db.collection<MatchRerankDoc>(COLLECTION_NAMES.matchReranks);
+}
+
 /**
  * Creates all required indexes. Call once on startup.
  */
 export async function ensureIndexes(db: Db): Promise<void> {
   const questionnaires = getQuestionnairesCollection(db);
-  if (!await questionnaires.indexExists("version_1")) {
-      console.log("[DB] Creating indexes for questionnaires...");
-      await questionnaires.createIndex({ version: 1 }, { unique: true });
-  }
-  if(!await questionnaires.indexExists("isActive_1")) {
-      console.log("[DB] Creating index for questionnaires isActive...");
-        await questionnaires.createIndex({ isActive: 1 });
-  }
+  await _createIndexIfNotExists(questionnaires, { version: 1 }, { unique: true });
+  await _createIndexIfNotExists(questionnaires, { isActive: 1 });
 
   const applicants = getApplicantsCollection(db);
   await _createIndexIfNotExists(applicants, { alias: 1 }, { unique: true });
@@ -76,7 +76,6 @@ export async function ensureIndexes(db: Db): Promise<void> {
   const identities = getIdentitiesCollection(db);
   await _createIndexIfNotExists(identities, { applicantId: 1 }, { unique: true });
   await _createIndexIfNotExists(identities, { alias: 1 });
-  await _dropIfSparse(identities, "instagramHash_1");
   await _createIndexIfNotExists(identities, { instagramHash: 1 }, { unique: true });
 
   const auditLogs = getAuditLogsCollection(db);
@@ -100,20 +99,10 @@ export async function ensureIndexes(db: Db): Promise<void> {
   await _createIndexIfNotExists(matches, { applicantBId: 1 });
   await _createIndexIfNotExists(matches, { initiatorId: 1 }, { sparse: true });
 
-  console.info("[DB] Indexes verification done");
+  const matchReranks = getMatchReranksCollection(db);
+  await _createIndexIfNotExists(matchReranks, { applicantId: 1 }, { unique: true });
 
-  async function _dropIfSparse(collection: Collection<any>, indexName: string) {
-    try {
-      const indexes = await collection.listIndexes().toArray();
-      const idx = indexes.find((i) => i.name === indexName);
-      if (idx?.sparse) {
-        console.log(`[DB] Dropping sparse index ${indexName} on ${collection.collectionName} to recreate without sparse…`);
-        await collection.dropIndex(indexName);
-      }
-    } catch (err: any) {
-      if (err?.code !== 26 && err?.code !== 27) throw err; // 26 = ns not found, 27 = index not found
-    }
-  }
+  console.info("[DB] Indexes verification done");
 
   async function _createIndexIfNotExists(collection: Collection<any>, indexSpec: IndexSpecification, options?: Record<string, unknown>) {
     const indexName = Object.entries(indexSpec).map(([field, order]) => `${field}_${order}`).join("_");

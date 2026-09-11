@@ -4,6 +4,7 @@ import type { Control, FieldErrors } from 'react-hook-form'
 import type { FormValues } from '../types/form'
 import Input from '../components/ui/Input'
 import Textarea from '../components/ui/Textarea'
+import WordCountHint from '../components/ui/WordCountHint'
 
 interface Props { control: Control<FormValues>; errors: FieldErrors<FormValues> }
 export const FIELDS: (keyof FormValues)[] = ['vibe_words', 'lifestyle']
@@ -22,8 +23,11 @@ export default function Step3Vibe({ control, errors }: Props) {
             error={errors.vibe_words?.message} required {...field} />
         )} />
         <Controller name="lifestyle" control={control} render={({ field }) => (
-          <Textarea label={t('steps.s3.lifestyle')} placeholder={t('steps.s3.lifestylePlaceholder')}
-            rows={4} error={errors.lifestyle?.message} required {...field} />
+          <div className="flex flex-col gap-1">
+            <Textarea label={t('steps.s3.lifestyle')} placeholder={t('steps.s3.lifestylePlaceholder')}
+              rows={4} error={errors.lifestyle?.message} required {...field} />
+            <WordCountHint value={field.value as string} />
+          </div>
         )} />
       </div>
       <div className="rounded-xl bg-bg border border-border p-4">

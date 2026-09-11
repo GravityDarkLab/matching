@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { fetchMatches, updateMatch, removeMatch } from '../api/client'
 import Button from '../../components/ui/Button'
@@ -10,6 +10,8 @@ import Skeleton from '../../components/ui/Skeleton'
 import { useToast } from '../../components/ui/Toast'
 import { matchStatusTone } from '../../components/ui/statusTones'
 import { useStatusLabels } from '../hooks/useStatusLabels'
+import { usePagedFilter } from '../hooks/usePagedFilter'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { Th, PageButton, TrashIcon } from '../components/Table'
 import type { Match, MatchStatus } from '../types'
 
@@ -39,9 +41,7 @@ function ChevronDownIcon() {
 export function Matches() {
   const { t } = useTranslation()
   const { success, error: toastError } = useToast()
-  const [searchParams, setSearchParams] = useSearchParams()
-  const status = searchParams.get('status') ?? ''
-  const page   = parseInt(searchParams.get('page') ?? '1', 10)
+  const { page, filterValue: status, setFilter: setStatusFilter, setPage } = usePagedFilter('status')
 
   const [matches, setMatches]       = useState<Match[]>([])
   const [total, setTotal]           = useState(0)
@@ -51,7 +51,7 @@ export function Matches() {
   const [notesMap, setNotesMap]     = useState<Record<string, string>>({})
   const [savingId, setSavingId]     = useState<string | null>(null)
   const [search, setSearch]         = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const debouncedSearch = useDebouncedValue(search)
   const [pendingDelete, setPendingDelete] = useState<Match | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
 
@@ -66,12 +66,6 @@ export function Matches() {
     { value: 'expired',     label: t('admin.matches.expired') },
   ]
 
-  // Debounce search input
-  useEffect(() => {
-    const id = setTimeout(() => setDebouncedSearch(search), 300)
-    return () => clearTimeout(id)
-  }, [search])
-
   function load() {
     setLoading(true)
     fetchMatches(page, LIMIT, status || undefined, undefined, debouncedSearch || undefined)
@@ -85,10 +79,7 @@ export function Matches() {
 
   useEffect(load, [page, status, debouncedSearch])
 
-  function setFilter(s: string) { setSearchParams(s ? { status: s } : {}); setSearch('') }
-  function setPage(p: number) {
-    setSearchParams(prev => { const n = new URLSearchParams(prev); n.set('page', String(p)); return n })
-  }
+  function setFilter(s: string) { setStatusFilter(s); setSearch('') }
 
   async function handleStatusChange(id: string, nextStatus: MatchStatus) {
     setSavingId(id)
@@ -155,7 +146,7 @@ export function Matches() {
 
       {/* Search bar */}
       <div className="relative">
-        <svg className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted pointer-events-none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted pointer-events-none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
         </svg>
         <input
@@ -164,10 +155,10 @@ export function Matches() {
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder={t('admin.matches.searchPlaceholder')}
-          className="w-full sm:w-80 rounded-xl border border-border bg-surface pl-9 pr-4 py-2 text-sm text-primary placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/40"
+          className="w-full sm:w-80 rounded-xl border border-border bg-surface ps-9 pe-4 py-2 text-sm text-primary placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/40"
         />
         {search && (
-          <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-primary">
+          <button onClick={() => setSearch('')} className="absolute end-3 top-1/2 -translate-y-1/2 text-muted hover:text-primary">
             <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>

@@ -79,6 +79,7 @@ beforeEach(() => {
   mockFetchIdentity.mockResolvedValue({
     alias: 'Lunar Ocean',
     instagramHandle: '@lunar_real',
+    fullName: 'Jane Doe',
   })
   mockFetchMatches.mockResolvedValue({ data: [], total: 0, page: 1, limit: 10, totalPages: 0 })
 })
@@ -97,6 +98,7 @@ describe('ApplicantDetail — identity reveal', () => {
     await userEvent.click(screen.getByRole('button', { name: /admin\.detail\.reveal/i }))
     await waitFor(() => expect(screen.getByText('@lunar_real')).toBeInTheDocument())
     expect(mockFetchIdentity).toHaveBeenCalledWith('id-a')
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument()
   })
 
   it('hides the Reveal button once identity is shown', async () => {
